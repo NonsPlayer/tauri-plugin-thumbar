@@ -1,12 +1,12 @@
 [package]
 name = "tauri-plugin-thumbar"
-version = "0.1.0"
+version = "0.1.1"
 description = "Runtime-defined Windows taskbar thumbnail toolbar controls for Tauri apps"
 authors = ["Miaoyww"]
 license = "MIT"
 edition = "2021"
 repository = "https://github.com/Miaoyww/tauri-plugin-thumbar"
-rust-version = "1.77.2"
+rust-version = "1.88"
 links = "tauri-plugin-thumbar"
 
 [package.metadata.docs.rs]
@@ -34,8 +34,7 @@ tauri = { version = "2" }
 thiserror = "2"
 
 [target.'cfg(windows)'.dependencies]
-# 0.25.6 is the last release that keeps the crate's Rust 1.77.2 minimum.
-image = { version = "=0.25.6", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
+image = { version = "0.25", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
 windows = { version = "0.62", features = [
   "Win32_Foundation",
   "Win32_Graphics_Dwm",

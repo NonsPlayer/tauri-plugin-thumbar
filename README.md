@@ -10,13 +10,13 @@ cover image.
 
 ## Install
 
-This plugin targets Tauri v2 and Rust 1.77.2+.
+This plugin targets Tauri v2 and Rust 1.88+.
 
 Add the Rust crate to your `src-tauri/Cargo.toml`:
 
 ```toml
 [dependencies]
-tauri-plugin-thumbar = "0.1.0"
+tauri-plugin-thumbar = "0.1.1"
 ```
 
 Add the JS bindings package:

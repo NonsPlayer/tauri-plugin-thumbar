@@ -1,6 +1,6 @@
 {
   "name": "tauri-plugin-thumbar",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "JavaScript bindings for tauri-plugin-thumbar",
   "license": "MIT",
   "authors": [

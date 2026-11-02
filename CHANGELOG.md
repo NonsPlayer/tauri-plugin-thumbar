@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [0.1.1] - 2026-11-02
 
 ### Added
 - Taskbar hover thumbnail covers through `set_cover`, accepting an absolute local path or encoded image bytes; `clear_cover` restores the live thumbnail.
@@ -13,6 +13,7 @@ All notable changes to this project will be documented in this file.
 - Added a Rust click handler and optional per-button app events.
 - Rebuilt the button set from current state when the taskbar button is recreated.
 - Renamed the crate, plugin, JS package and command namespace to `thumbar`.
+- Widened the `image` dependency to any 0.25.x release so applications using a newer `image` are not downgraded; the minimum supported Rust version is now 1.88.
 
 ## [0.1.0] - 2026-04-23
 
