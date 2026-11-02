@@ -1,9 +1,0 @@
-"$schema" = "schemas/schema.json"
-
-[default]
-description = "Enables thumbnail toolbar control commands for this plugin."
-permissions = [
-  "allow-initialize",
-  "allow-update",
-  "allow-is-supported",
-]
