@@ -2,7 +2,7 @@
   "name": "tauri-plugin-thumbar",
   "version": "0.1.0",
   "description": "JavaScript bindings for tauri-plugin-thumbar",
-  "license": "MIT OR Apache-2.0",
+  "license": "MIT",
   "authors": [
     "Miaoyww"
   ],

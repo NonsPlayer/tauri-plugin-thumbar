@@ -2,14 +2,6 @@
 
 Runtime-defined Windows taskbar thumbnail toolbar controls for Tauri applications.
 
-| Platform | Supported |
-| --- | --- |
-| Windows | ✓ full |
-| Linux | ~ no-op fallback |
-| macOS | ~ no-op fallback |
-| Android | ~ no-op fallback |
-| iOS | ~ no-op fallback |
-
 The button list is supplied at runtime. Windows only lets an application add
 buttons to a window's thumbnail toolbar once, so `initialize` takes the complete
 list (up to 7 buttons) and `update` changes icon, tooltip, enabled and visible
