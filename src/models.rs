@@ -1,12 +1,16 @@
 use std::collections::HashSet;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
 
 /// Maximum number of buttons supported by the Windows thumbnail toolbar.
 pub const MAX_BUTTONS: usize = 7;
+
+/// Maximum number of decoded bytes accepted for a cover image.
+pub const MAX_COVER_BYTES: usize = 16 * 1024 * 1024;
 
 /// Button identifiers must fit in the low word of `WM_COMMAND`.
 const MAX_BUTTON_ID: u32 = u16::MAX as u32;
@@ -111,6 +115,85 @@ impl ButtonUpdate {
     }
 }
 
+/// A cover image shown in the taskbar thumbnail.
+///
+/// Exactly one of `path` or `data` must be set. `path` is an absolute path to
+/// a local image file. `data` is a base64-encoded image. PNG, JPEG, WebP and
+/// GIF are supported.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Cover {
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub data: Option<String>,
+}
+
+impl Cover {
+    /// Creates a cover from an absolute local file path.
+    pub fn from_path(path: impl Into<String>) -> Self {
+        Self {
+            path: Some(path.into()),
+            data: None,
+        }
+    }
+
+    /// Creates a cover from encoded image bytes.
+    pub fn from_bytes(bytes: &[u8]) -> Self {
+        Self {
+            path: None,
+            data: Some(base64::engine::general_purpose::STANDARD.encode(bytes)),
+        }
+    }
+
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+    pub(crate) fn source(&self) -> Result<CoverSource> {
+        match (self.path.as_deref(), self.data.as_deref()) {
+            (Some(_), Some(_)) => Err(Error::Message(
+                "cover must provide either a path or data, not both".into(),
+            )),
+            (None, None) => Err(Error::Message("cover must provide a path or data".into())),
+            (Some(path), None) => {
+                if path.trim().is_empty() {
+                    return Err(Error::Message("cover path must not be empty".into()));
+                }
+                Ok(CoverSource::Path(path.to_owned()))
+            }
+            (None, Some(data)) => {
+                if data.trim().is_empty() {
+                    return Err(Error::Message("cover data must not be empty".into()));
+                }
+                let bytes = base64::engine::general_purpose::STANDARD
+                    .decode(data)
+                    .map_err(|error| {
+                        Error::Message(format!("cover data is not valid base64: {error}"))
+                    })?;
+                if bytes.len() > MAX_COVER_BYTES {
+                    return Err(Error::Message(format!(
+                        "cover data must not exceed {MAX_COVER_BYTES} bytes"
+                    )));
+                }
+                Ok(CoverSource::Bytes(bytes))
+            }
+        }
+    }
+}
+
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub(crate) enum CoverSource {
+    Path(String),
+    Bytes(Vec<u8>),
+}
+
+/// Decoded cover pixels kept for DWM thumbnail requests.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub(crate) struct CoverImage {
+    pub width: u32,
+    pub height: u32,
+    /// Straight (non-premultiplied) RGBA8 pixels, top-down.
+    pub rgba: Vec<u8>,
+}
+
 /// Payload of the optional app event emitted for a button click.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -158,6 +241,8 @@ impl From<Button> for ButtonState {
 pub(crate) struct WindowState {
     pub hwnd: isize,
     pub buttons: Mutex<Vec<ButtonState>>,
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+    pub cover: Mutex<Option<Arc<CoverImage>>>,
 }
 
 pub(crate) fn validate_buttons(buttons: &[Button]) -> Result<()> {
@@ -250,5 +335,53 @@ mod tests {
     fn rejects_empty_event_names() {
         let button = Button::new(1, "icons/a.ico").event("  ");
         assert!(validate_buttons(&[button]).is_err());
+    }
+
+    #[test]
+    fn cover_accepts_a_single_source() {
+        assert!(matches!(
+            Cover::from_path("C:\\covers\\a.png").source(),
+            Ok(CoverSource::Path(_))
+        ));
+        assert!(matches!(
+            Cover::from_bytes(b"image bytes").source(),
+            Ok(CoverSource::Bytes(_))
+        ));
+    }
+
+    #[test]
+    fn cover_rejects_missing_or_duplicate_sources() {
+        assert!(Cover {
+            path: None,
+            data: None
+        }
+        .source()
+        .is_err());
+        assert!(Cover {
+            path: Some("C:\\covers\\a.png".into()),
+            data: Some("aW1hZ2U=".into()),
+        }
+        .source()
+        .is_err());
+    }
+
+    #[test]
+    fn cover_rejects_blank_values_and_invalid_base64() {
+        assert!(Cover::from_path("   ").source().is_err());
+        assert!(Cover {
+            path: None,
+            data: Some("not base64!".into()),
+        }
+        .source()
+        .is_err());
+    }
+
+    #[test]
+    fn cover_from_bytes_round_trips_payload() {
+        let bytes = b"cover payload";
+        match Cover::from_bytes(bytes).source() {
+            Ok(CoverSource::Bytes(decoded)) => assert_eq!(decoded, bytes),
+            _ => panic!("expected decoded cover bytes"),
+        }
     }
 }

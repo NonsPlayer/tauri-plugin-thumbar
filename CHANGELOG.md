@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- Taskbar hover thumbnail covers through `set_cover`, accepting an absolute local path or encoded image bytes; `clear_cover` restores the live thumbnail.
+
 ### Changed
 - Replaced the fixed three-button API with a runtime-defined button list of up to seven buttons.
 - Replaced `set_playback_state` and `set_navigation_enabled` with a generic `update` command.

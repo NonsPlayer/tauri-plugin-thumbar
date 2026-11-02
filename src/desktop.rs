@@ -1,13 +1,25 @@
 #[cfg(target_os = "windows")]
 mod platform {
     use std::collections::HashMap;
+    use std::ffi::c_void;
+    use std::fs;
+    use std::mem::size_of;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::{Arc, Mutex};
 
+    use image::{ImageReader, Limits};
     use tauri::{path::BaseDirectory, AppHandle, Emitter, Manager, Runtime, WebviewWindow};
-    use windows::core::PCWSTR;
-    use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+    use windows::core::{BOOL, PCWSTR};
+    use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
+    use windows::Win32::Graphics::Dwm::{
+        DwmInvalidateIconicBitmaps, DwmSetIconicLivePreviewBitmap, DwmSetIconicThumbnail,
+        DwmSetWindowAttribute, DWMWA_FORCE_ICONIC_REPRESENTATION, DWMWA_HAS_ICONIC_BITMAP,
+    };
+    use windows::Win32::Graphics::Gdi::{
+        CreateDIBSection, DeleteObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS,
+        HBITMAP,
+    };
     use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
     use windows::Win32::UI::Shell::{
         DefSubclassProc, ITaskbarList3, RemoveWindowSubclass, SetWindowSubclass, TaskbarList,
@@ -15,17 +27,23 @@ mod platform {
         THUMBBUTTON, THUMBBUTTONFLAGS,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
-        DestroyIcon, LoadImageW, PostMessageW, RegisterWindowMessageW, HICON, IMAGE_ICON,
-        LR_DEFAULTSIZE, LR_LOADFROMFILE, WM_COMMAND, WM_NCDESTROY, WM_USER,
+        DestroyIcon, GetClientRect, LoadImageW, PostMessageW, RegisterWindowMessageW, HICON,
+        IMAGE_ICON, LR_DEFAULTSIZE, LR_LOADFROMFILE, WM_COMMAND, WM_DWMSENDICONICLIVEPREVIEWBITMAP,
+        WM_DWMSENDICONICTHUMBNAIL, WM_NCDESTROY, WM_USER,
     };
 
     use crate::error::{Error, Result};
     use crate::models::{
-        Button, ButtonHandler, ButtonState, ButtonUpdate, ClickEvent, WindowState,
+        Button, ButtonHandler, ButtonState, ButtonUpdate, ClickEvent, Cover, CoverImage,
+        CoverSource, WindowState, MAX_COVER_BYTES,
     };
 
     const SUBCLASS_ID: usize = 4242;
     const WM_USER_UPDATE: u32 = WM_USER + 1;
+    const WM_USER_COVER: u32 = WM_USER + 2;
+
+    const MAX_COVER_DIMENSION: u32 = 16_384;
+    const MAX_COVER_ALLOC: u64 = 256 * 1024 * 1024;
 
     static TASKBAR_CREATED_MSG_ID: AtomicU32 = AtomicU32::new(0);
 
@@ -70,6 +88,7 @@ mod platform {
         let state = Arc::new(WindowState {
             hwnd: hwnd.0 as isize,
             buttons: Mutex::new(states),
+            cover: Mutex::new(None),
         });
 
         let emit_label = label.clone();
@@ -153,6 +172,37 @@ mod platform {
         Ok(())
     }
 
+    pub fn set_cover<R: Runtime>(
+        _window: &WebviewWindow<R>,
+        state: &Arc<WindowState>,
+        cover: Option<Cover>,
+    ) -> Result<()> {
+        let image = match cover {
+            Some(cover) => Some(Arc::new(decode_cover(&cover)?)),
+            None => None,
+        };
+
+        {
+            let mut slot = state
+                .cover
+                .lock()
+                .map_err(|_| Error::Message("thumbar cover state is poisoned".into()))?;
+            *slot = image;
+        }
+
+        unsafe {
+            PostMessageW(
+                Some(HWND(state.hwnd as _)),
+                WM_USER_COVER,
+                WPARAM(0),
+                LPARAM(0),
+            )
+            .map_err(|error| Error::Message(format!("failed to post cover update: {error}")))?;
+        }
+
+        Ok(())
+    }
+
     unsafe extern "system" fn subclass_proc(
         hwnd: HWND,
         msg: u32,
@@ -188,6 +238,58 @@ mod platform {
             }
 
             return LRESULT(0);
+        }
+
+        if msg == WM_USER_COVER {
+            let has_cover = context
+                .state
+                .cover
+                .lock()
+                .map(|cover| cover.is_some())
+                .unwrap_or(false);
+
+            if let Err(error) = set_iconic_attributes(context.hwnd, has_cover) {
+                log::error!("thumbar: failed to update cover attributes: {error}");
+            }
+            unsafe {
+                let _ = DwmInvalidateIconicBitmaps(context.hwnd);
+            }
+
+            return LRESULT(0);
+        }
+
+        if msg == WM_DWMSENDICONICTHUMBNAIL {
+            let width = ((lparam.0 >> 16) & 0xFFFF) as u32;
+            let height = (lparam.0 & 0xFFFF) as u32;
+
+            if let Some(bitmap) = context.render_cover_bitmap(width, height) {
+                unsafe {
+                    if let Err(error) = DwmSetIconicThumbnail(context.hwnd, bitmap, 0) {
+                        log::error!("thumbar: failed to set iconic thumbnail: {error}");
+                    }
+                    let _ = DeleteObject(bitmap.into());
+                }
+                return LRESULT(0);
+            }
+
+            return DefSubclassProc(hwnd, msg, wparam, lparam);
+        }
+
+        if msg == WM_DWMSENDICONICLIVEPREVIEWBITMAP {
+            let (width, height) = context.client_size();
+
+            if let Some(bitmap) = context.render_cover_bitmap(width, height) {
+                unsafe {
+                    if let Err(error) = DwmSetIconicLivePreviewBitmap(context.hwnd, bitmap, None, 0)
+                    {
+                        log::error!("thumbar: failed to set iconic live preview: {error}");
+                    }
+                    let _ = DeleteObject(bitmap.into());
+                }
+                return LRESULT(0);
+            }
+
+            return DefSubclassProc(hwnd, msg, wparam, lparam);
         }
 
         if msg == WM_COMMAND {
@@ -245,6 +347,17 @@ mod platform {
 
         context.taskbar = Some(taskbar);
         context.added = true;
+
+        let has_cover = context
+            .state
+            .cover
+            .lock()
+            .map(|cover| cover.is_some())
+            .unwrap_or(false);
+        if has_cover {
+            let _ = DwmInvalidateIconicBitmaps(context.hwnd);
+        }
+
         Ok(())
     }
 
@@ -268,6 +381,36 @@ mod platform {
     }
 
     impl Context {
+        fn client_size(&self) -> (u32, u32) {
+            let mut rect = RECT::default();
+            match unsafe { GetClientRect(self.hwnd, &mut rect) } {
+                Ok(()) => (
+                    (rect.right - rect.left).max(0) as u32,
+                    (rect.bottom - rect.top).max(0) as u32,
+                ),
+                Err(_) => (0, 0),
+            }
+        }
+
+        fn render_cover_bitmap(&self, width: u32, height: u32) -> Option<HBITMAP> {
+            if width == 0 || height == 0 {
+                return None;
+            }
+
+            let cover = {
+                let guard = self.state.cover.lock().ok()?;
+                guard.as_ref().cloned()?
+            };
+
+            match render_bitmap(&cover, width, height) {
+                Ok(bitmap) => Some(bitmap),
+                Err(error) => {
+                    log::error!("thumbar: failed to render cover: {error}");
+                    None
+                }
+            }
+        }
+
         unsafe fn icon(&mut self, path: &Path) -> Option<HICON> {
             if let Some(icon) = self.icons.get(path) {
                 return Some(*icon);
@@ -362,6 +505,162 @@ mod platform {
         message
     }
 
+    fn decode_cover(cover: &Cover) -> Result<CoverImage> {
+        match cover.source()? {
+            CoverSource::Path(path) => {
+                let path = PathBuf::from(path);
+                if !path.is_absolute() {
+                    return Err(Error::Message(format!(
+                        "cover path '{}' must be absolute",
+                        path.display()
+                    )));
+                }
+
+                let metadata = fs::metadata(&path).map_err(|error| {
+                    Error::Message(format!(
+                        "failed to read cover '{}': {error}",
+                        path.display()
+                    ))
+                })?;
+                if metadata.len() > MAX_COVER_BYTES as u64 {
+                    return Err(Error::Message(format!(
+                        "cover '{}' must not exceed {MAX_COVER_BYTES} bytes",
+                        path.display()
+                    )));
+                }
+
+                let bytes = fs::read(&path).map_err(|error| {
+                    Error::Message(format!(
+                        "failed to read cover '{}': {error}",
+                        path.display()
+                    ))
+                })?;
+                decode_cover_bytes(&path.display().to_string(), &bytes)
+            }
+            CoverSource::Bytes(bytes) => decode_cover_bytes("cover data", &bytes),
+        }
+    }
+
+    fn decode_cover_bytes(source: &str, bytes: &[u8]) -> Result<CoverImage> {
+        let mut limits = Limits::default();
+        limits.max_image_width = Some(MAX_COVER_DIMENSION);
+        limits.max_image_height = Some(MAX_COVER_DIMENSION);
+        limits.max_alloc = Some(MAX_COVER_ALLOC);
+
+        let mut reader = ImageReader::new(std::io::Cursor::new(bytes));
+        reader.limits(limits);
+        let reader = reader
+            .with_guessed_format()
+            .map_err(|error| Error::Message(format!("failed to read {source}: {error}")))?;
+        let image = reader
+            .decode()
+            .map_err(|error| Error::Message(format!("failed to decode {source}: {error}")))?;
+
+        let rgba = image.to_rgba8();
+        Ok(CoverImage {
+            width: rgba.width(),
+            height: rgba.height(),
+            rgba: rgba.into_raw(),
+        })
+    }
+
+    fn render_bitmap(cover: &CoverImage, width: u32, height: u32) -> Result<HBITMAP> {
+        let (fit_width, fit_height) = fit_within(cover.width, cover.height, width, height);
+
+        let source = image::RgbaImage::from_raw(cover.width, cover.height, cover.rgba.clone())
+            .ok_or_else(|| Error::Message("cover pixels are inconsistent".into()))?;
+        let resized = image::imageops::resize(
+            &source,
+            fit_width,
+            fit_height,
+            image::imageops::FilterType::Lanczos3,
+        );
+
+        let mut pixels = vec![0u8; width as usize * height as usize * 4];
+        for pixel in pixels.chunks_exact_mut(4) {
+            pixel[3] = 255;
+        }
+
+        let origin_x = (width - fit_width) / 2;
+        let origin_y = (height - fit_height) / 2;
+        for y in 0..fit_height {
+            for x in 0..fit_width {
+                let source_pixel = resized.get_pixel(x, y);
+                let alpha = source_pixel[3] as u32;
+                let offset = (((y + origin_y) * width + (x + origin_x)) * 4) as usize;
+                pixels[offset] = (source_pixel[2] as u32 * alpha / 255) as u8;
+                pixels[offset + 1] = (source_pixel[1] as u32 * alpha / 255) as u8;
+                pixels[offset + 2] = (source_pixel[0] as u32 * alpha / 255) as u8;
+                pixels[offset + 3] = alpha as u8;
+            }
+        }
+
+        create_bitmap(width, height, &pixels)
+    }
+
+    fn fit_within(
+        source_width: u32,
+        source_height: u32,
+        max_width: u32,
+        max_height: u32,
+    ) -> (u32, u32) {
+        if source_width == 0 || source_height == 0 {
+            return (1, 1);
+        }
+
+        let scale =
+            (max_width as f64 / source_width as f64).min(max_height as f64 / source_height as f64);
+        let width = ((source_width as f64 * scale).round() as u32).clamp(1, max_width);
+        let height = ((source_height as f64 * scale).round() as u32).clamp(1, max_height);
+        (width, height)
+    }
+
+    fn create_bitmap(width: u32, height: u32, bgra: &[u8]) -> Result<HBITMAP> {
+        let info = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: width as i32,
+                biHeight: -(height as i32),
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: BI_RGB.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let mut bits: *mut c_void = std::ptr::null_mut();
+        let bitmap =
+            unsafe { CreateDIBSection(None, &info, DIB_RGB_COLORS, &mut bits, None, 0) }
+                .map_err(|error| Error::Message(format!("CreateDIBSection failed: {error}")))?;
+        if bits.is_null() {
+            unsafe {
+                let _ = DeleteObject(bitmap.into());
+            }
+            return Err(Error::Message(
+                "CreateDIBSection returned no pixel buffer".into(),
+            ));
+        }
+
+        unsafe {
+            std::ptr::copy_nonoverlapping(bgra.as_ptr(), bits as *mut u8, bgra.len());
+        }
+        Ok(bitmap)
+    }
+
+    fn set_iconic_attributes(hwnd: HWND, enabled: bool) -> Result<()> {
+        let value = BOOL(enabled as i32);
+        let pointer = &value as *const BOOL as *const c_void;
+        let size = size_of::<BOOL>() as u32;
+
+        unsafe {
+            DwmSetWindowAttribute(hwnd, DWMWA_FORCE_ICONIC_REPRESENTATION, pointer, size)?;
+            DwmSetWindowAttribute(hwnd, DWMWA_HAS_ICONIC_BITMAP, pointer, size)?;
+        }
+
+        Ok(())
+    }
+
     fn wide_string(value: &str) -> Vec<u16> {
         value.encode_utf16().chain(std::iter::once(0)).collect()
     }
@@ -386,7 +685,7 @@ mod platform {
     use tauri::{Runtime, WebviewWindow};
 
     use crate::error::Result;
-    use crate::models::{Button, ButtonHandler, ButtonState, ButtonUpdate, WindowState};
+    use crate::models::{Button, ButtonHandler, ButtonState, ButtonUpdate, Cover, WindowState};
 
     pub fn attach<R: Runtime>(
         _window: &WebviewWindow<R>,
@@ -396,6 +695,7 @@ mod platform {
         Ok(Arc::new(WindowState {
             hwnd: 0,
             buttons: Mutex::new(buttons.into_iter().map(ButtonState::from).collect()),
+            cover: Mutex::new(None),
         }))
     }
 
@@ -406,6 +706,14 @@ mod platform {
     ) -> Result<()> {
         Ok(())
     }
+
+    pub fn set_cover<R: Runtime>(
+        _window: &WebviewWindow<R>,
+        _state: &Arc<WindowState>,
+        _cover: Option<Cover>,
+    ) -> Result<()> {
+        Ok(())
+    }
 }
 
-pub use platform::{attach, update};
+pub use platform::{attach, set_cover, update};

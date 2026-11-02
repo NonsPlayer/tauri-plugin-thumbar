@@ -4,6 +4,9 @@
 //! Windows only allows the button set to be added once per window; later changes
 //! go through [`Thumbar::update`], which can update icons, tooltips, enabled and
 //! visible state without re-adding buttons.
+//!
+//! [`Thumbar::set_cover`] replaces the taskbar hover thumbnail with a static
+//! cover image. Passing `None` restores the live window thumbnail.
 
 mod commands;
 mod desktop;
@@ -20,7 +23,9 @@ use tauri::{
 };
 
 pub use error::{Error, Result};
-pub use models::{Button, ButtonHandler, ButtonUpdate, ClickEvent, MAX_BUTTONS};
+pub use models::{
+    Button, ButtonHandler, ButtonUpdate, ClickEvent, Cover, MAX_BUTTONS, MAX_COVER_BYTES,
+};
 
 use models::WindowState;
 
@@ -75,18 +80,29 @@ impl<R: Runtime> Thumbar<R> {
 
     /// Applies a partial update to an existing button.
     pub fn update(&self, window: &WebviewWindow<R>, update: ButtonUpdate) -> Result<()> {
-        let label = window.label().to_string();
-        let state = {
-            let windows = self
-                .windows
-                .lock()
-                .map_err(|_| Error::Message("thumbar registry is poisoned".into()))?;
-            windows.get(&label).cloned().ok_or_else(|| {
-                Error::Message(format!("thumbar is not initialized for window '{label}'"))
-            })?
-        };
-
+        let state = self.window_state(window)?;
         desktop::update(window, &state, update)
+    }
+
+    /// Sets or clears the taskbar hover thumbnail cover.
+    ///
+    /// The cover replaces the live window thumbnail with a static image. Pass
+    /// `None` to restore the default thumbnail. The cover is only used by the
+    /// Windows taskbar; other platforms accept the call as a no-op.
+    pub fn set_cover(&self, window: &WebviewWindow<R>, cover: Option<Cover>) -> Result<()> {
+        let state = self.window_state(window)?;
+        desktop::set_cover(window, &state, cover)
+    }
+
+    fn window_state(&self, window: &WebviewWindow<R>) -> Result<Arc<WindowState>> {
+        let label = window.label();
+        let windows = self
+            .windows
+            .lock()
+            .map_err(|_| Error::Message("thumbar registry is poisoned".into()))?;
+        windows.get(label).cloned().ok_or_else(|| {
+            Error::Message(format!("thumbar is not initialized for window '{label}'"))
+        })
     }
 
     /// Returns whether native thumbnail toolbar behavior is supported.
@@ -133,6 +149,7 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
         .invoke_handler(tauri::generate_handler![
             commands::initialize,
             commands::update,
+            commands::set_cover,
             commands::is_supported,
         ])
         .build()

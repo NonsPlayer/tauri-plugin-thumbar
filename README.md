@@ -5,7 +5,8 @@ Runtime-defined Windows taskbar thumbnail toolbar controls for Tauri application
 The button list is supplied at runtime. Windows only lets an application add
 buttons to a window's thumbnail toolbar once, so `initialize` takes the complete
 list (up to 7 buttons) and `update` changes icon, tooltip, enabled and visible
-state afterwards.
+state afterwards. `set_cover` replaces the taskbar hover thumbnail with a static
+cover image.
 
 ## Install
 
@@ -100,6 +101,45 @@ app.thumbar().update(&window, ButtonUpdate::new(3).enabled(false))?;
 Buttons can only be added once per window. Use `update` to change the icon,
 tooltip, enabled or visible state; use `visible: false` to hide a button instead
 of removing it.
+
+## Cover
+
+`set_cover` makes DWM render a static image in the taskbar hover thumbnail
+instead of a live preview of the window. `clear_cover` restores the live
+thumbnail.
+
+The cover can come from an absolute local path or from encoded image bytes:
+
+```rust
+use tauri_plugin_thumbar::{Cover, ThumbarExt};
+
+app.thumbar().set_cover(&window, Some(Cover::from_path("/path/to/cover.jpg")))?;
+app.thumbar().set_cover(&window, Some(Cover::from_bytes(cover_bytes)))?;
+app.thumbar().set_cover(&window, None)?;
+```
+
+From JavaScript:
+
+```ts
+import { clearCover, setCoverFromBytes, setCoverFromPath } from 'tauri-plugin-thumbar'
+
+await setCoverFromPath('C:\\cache\\cover.jpg')
+await setCoverFromBytes(new Uint8Array(await response.arrayBuffer()))
+await clearCover()
+```
+
+- Call `initialize` before `set_cover`; the cover belongs to an initialized
+  window.
+- PNG, JPEG, WebP and GIF are supported.
+- The encoded image must not exceed **16 MiB**.
+- Paths must be absolute; relative paths are rejected.
+- The cover stays attached until `clear_cover` or the window is destroyed.
+- The image is scaled to fit and letterboxed on black. It is rendered when DWM
+  requests the thumbnail, for both the iconic thumbnail and the peek preview.
+- Setting `DWMWA_FORCE_ICONIC_REPRESENTATION` is required for this behavior.
+  It forces the iconic representation for the window's taskbar thumbnail and
+  peek preview; Windows versions that show a full-size peek preview from the
+  Alt+Tab switcher may therefore use the cover there as well.
 
 ## JavaScript usage
 

@@ -32,6 +32,22 @@ export declare function initialize(buttons: ThumbarButton[]): Promise<void>;
  */
 export declare function update(button: ThumbarButtonUpdate): Promise<void>;
 /**
+ * Sets the taskbar hover thumbnail from an absolute local image path.
+ *
+ * PNG, JPEG, WebP and GIF are supported, up to 16 MiB.
+ */
+export declare function setCoverFromPath(path: string): Promise<void>;
+/**
+ * Sets the taskbar hover thumbnail from encoded image bytes.
+ *
+ * PNG, JPEG, WebP and GIF are supported, up to 16 MiB.
+ */
+export declare function setCoverFromBytes(bytes: Uint8Array | ArrayBuffer): Promise<void>;
+/**
+ * Restores the live window thumbnail on the taskbar.
+ */
+export declare function clearCover(): Promise<void>;
+/**
  * Returns whether the current platform supports native thumbnail toolbars.
  */
 export declare function isSupported(): Promise<boolean>;
