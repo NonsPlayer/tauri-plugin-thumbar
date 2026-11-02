@@ -1,0 +1,41 @@
+[package]
+name = "tauri-plugin-taskbar"
+version = "0.1.0"
+description = "Windows taskbar thumbnail button controls for Tauri apps"
+authors = ["xerosf"]
+license = "Apache-2.0 OR MIT"
+edition = "2021"
+repository = "https://github.com/xerosf/tauri-plugin-taskbar"
+rust-version = "1.77.2"
+links = "tauri-plugin-taskbar"
+
+[package.metadata.docs.rs]
+targets = ["x86_64-pc-windows-msvc"]
+
+[package.metadata.platforms.support]
+windows = { level = "full", notes = "Taskbar thumbnail toolbar APIs are fully supported." }
+linux = { level = "partial", notes = "Plugin commands are available but taskbar thumbnail controls are no-op." }
+macos = { level = "partial", notes = "Plugin commands are available but taskbar thumbnail controls are no-op." }
+android = { level = "partial", notes = "Plugin commands are available but taskbar thumbnail controls are no-op." }
+ios = { level = "partial", notes = "Plugin commands are available but taskbar thumbnail controls are no-op." }
+
+[lib]
+name = "tauri_plugin_taskbar"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-plugin = { version = "2", features = ["build"] }
+
+[dependencies]
+log = "0.4"
+serde = { version = "1", features = ["derive"] }
+tauri = { version = "2" }
+thiserror = "2"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+  "Win32_Foundation",
+  "Win32_System_Com",
+  "Win32_UI_Shell",
+  "Win32_UI_WindowsAndMessaging"
+] }

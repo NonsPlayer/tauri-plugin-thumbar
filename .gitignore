@@ -1,0 +1,9 @@
+# Rust artifacts
+/target
+Cargo.lock
+
+/node_modules
+/dist-js
+
+# IDEs
+.vscode/
