@@ -1,12 +1,12 @@
 {
-  "name": "tauri-plugin-taskbar",
+  "name": "tauri-plugin-thumbar",
   "version": "0.1.0",
-  "description": "JavaScript bindings for tauri-plugin-taskbar",
+  "description": "JavaScript bindings for tauri-plugin-thumbar",
   "license": "MIT OR Apache-2.0",
   "authors": [
-    "xerosf"
+    "Miaoyww"
   ],
-  "repository": "https://github.com/xerosf/tauri-plugin-taskbar",
+  "repository": "https://github.com/Miaoyww/tauri-plugin-thumbar",
   "type": "module",
   "types": "./dist-js/index.d.ts",
   "main": "./dist-js/index.cjs",

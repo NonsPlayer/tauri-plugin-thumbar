@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Changed
+- Replaced the fixed three-button API with a runtime-defined button list of up to seven buttons.
+- Replaced `set_playback_state` and `set_navigation_enabled` with a generic `update` command.
+- Added a Rust click handler and optional per-button app events.
+- Rebuilt the button set from current state when the taskbar button is recreated.
+- Renamed the crate, plugin, JS package and command namespace to `thumbar`.
+
 ## [0.1.0] - 2026-04-23
 
 ### Added

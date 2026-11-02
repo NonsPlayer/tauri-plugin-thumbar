@@ -1,13 +1,13 @@
 [package]
-name = "tauri-plugin-taskbar"
+name = "tauri-plugin-thumbar"
 version = "0.1.0"
-description = "Windows taskbar thumbnail button controls for Tauri apps"
-authors = ["xerosf"]
+description = "Runtime-defined Windows taskbar thumbnail toolbar controls for Tauri apps"
+authors = ["Miaoyww"]
 license = "Apache-2.0 OR MIT"
 edition = "2021"
-repository = "https://github.com/xerosf/tauri-plugin-taskbar"
+repository = "https://github.com/Miaoyww/tauri-plugin-thumbar"
 rust-version = "1.77.2"
-links = "tauri-plugin-taskbar"
+links = "tauri-plugin-thumbar"
 
 [package.metadata.docs.rs]
 targets = ["x86_64-pc-windows-msvc"]
@@ -20,7 +20,7 @@ android = { level = "partial", notes = "Plugin commands are available but taskba
 ios = { level = "partial", notes = "Plugin commands are available but taskbar thumbnail controls are no-op." }
 
 [lib]
-name = "tauri_plugin_taskbar"
+name = "tauri_plugin_thumbar"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

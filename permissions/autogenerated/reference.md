@@ -1,12 +1,11 @@
 ## Default Permission
 
-Enables standard taskbar control commands for this plugin.
+Enables thumbnail toolbar control commands for this plugin.
 
 #### This default permission set includes the following:
 
 - `allow-initialize`
-- `allow-set-playback-state`
-- `allow-set-navigation-enabled`
+- `allow-update`
 - `allow-is-supported`
 
 ## Permission Table
@@ -21,7 +20,7 @@ Enables standard taskbar control commands for this plugin.
 <tr>
 <td>
 
-`taskbar:allow-initialize`
+`thumbar:allow-initialize`
 
 </td>
 <td>
@@ -34,7 +33,7 @@ Enables the initialize command without any pre-configured scope.
 <tr>
 <td>
 
-`taskbar:deny-initialize`
+`thumbar:deny-initialize`
 
 </td>
 <td>
@@ -47,7 +46,7 @@ Denies the initialize command without any pre-configured scope.
 <tr>
 <td>
 
-`taskbar:allow-is-supported`
+`thumbar:allow-is-supported`
 
 </td>
 <td>
@@ -60,7 +59,7 @@ Enables the is_supported command without any pre-configured scope.
 <tr>
 <td>
 
-`taskbar:deny-is-supported`
+`thumbar:deny-is-supported`
 
 </td>
 <td>
@@ -73,25 +72,12 @@ Denies the is_supported command without any pre-configured scope.
 <tr>
 <td>
 
-`taskbar:allow-set-navigation-enabled`
+`thumbar:allow-update`
 
 </td>
 <td>
 
-Enables the set_navigation_enabled command without any pre-configured scope.
-
-</td>
-</tr>
-
-<tr>
-<td>
-
-`taskbar:deny-set-navigation-enabled`
-
-</td>
-<td>
-
-Denies the set_navigation_enabled command without any pre-configured scope.
+Enables the update command without any pre-configured scope.
 
 </td>
 </tr>
@@ -99,25 +85,12 @@ Denies the set_navigation_enabled command without any pre-configured scope.
 <tr>
 <td>
 
-`taskbar:allow-set-playback-state`
+`thumbar:deny-update`
 
 </td>
 <td>
 
-Enables the set_playback_state command without any pre-configured scope.
-
-</td>
-</tr>
-
-<tr>
-<td>
-
-`taskbar:deny-set-playback-state`
-
-</td>
-<td>
-
-Denies the set_playback_state command without any pre-configured scope.
+Denies the update command without any pre-configured scope.
 
 </td>
 </tr>

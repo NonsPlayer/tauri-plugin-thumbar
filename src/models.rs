@@ -1,85 +1,254 @@
-use serde::Deserialize;
+use std::collections::HashSet;
+use std::sync::Mutex;
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(default, rename_all = "camelCase")]
-pub struct Config {
-    pub auto_attach: bool,
-    pub window_label: String,
-    pub icons: IconPaths,
-    pub events: EventNames,
-    pub tooltips: Tooltips,
+use serde::{Deserialize, Serialize};
+
+use crate::error::{Error, Result};
+
+/// Maximum number of buttons supported by the Windows thumbnail toolbar.
+pub const MAX_BUTTONS: usize = 7;
+
+/// Button identifiers must fit in the low word of `WM_COMMAND`.
+const MAX_BUTTON_ID: u32 = u16::MAX as u32;
+
+const fn default_true() -> bool {
+    true
 }
 
-impl Default for Config {
-    fn default() -> Self {
+/// A thumbnail toolbar button provided when the toolbar is initialized.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Button {
+    /// Unique identifier within the window, in `1..=65535`.
+    pub id: u32,
+    /// Tauri resource path to an `.ico` file.
+    pub icon: String,
+    #[serde(default)]
+    pub tooltip: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_true")]
+    pub visible: bool,
+    /// Optional app event emitted when the button is clicked.
+    #[serde(default)]
+    pub event: Option<String>,
+}
+
+impl Button {
+    pub fn new(id: u32, icon: impl Into<String>) -> Self {
         Self {
-            auto_attach: true,
-            window_label: "main".to_string(),
-            icons: IconPaths::default(),
-            events: EventNames::default(),
-            tooltips: Tooltips::default(),
+            id,
+            icon: icon.into(),
+            tooltip: String::new(),
+            enabled: true,
+            visible: true,
+            event: None,
+        }
+    }
+
+    pub fn tooltip(mut self, tooltip: impl Into<String>) -> Self {
+        self.tooltip = tooltip.into();
+        self
+    }
+
+    pub fn enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
+
+    pub fn visible(mut self, visible: bool) -> Self {
+        self.visible = visible;
+        self
+    }
+
+    pub fn event(mut self, event: impl Into<String>) -> Self {
+        self.event = Some(event.into());
+        self
+    }
+}
+
+/// A partial update for a button that is already part of the toolbar.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ButtonUpdate {
+    pub id: u32,
+    #[serde(default)]
+    pub icon: Option<String>,
+    #[serde(default)]
+    pub tooltip: Option<String>,
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub visible: Option<bool>,
+}
+
+impl ButtonUpdate {
+    pub fn new(id: u32) -> Self {
+        Self {
+            id,
+            ..Default::default()
+        }
+    }
+
+    pub fn icon(mut self, icon: impl Into<String>) -> Self {
+        self.icon = Some(icon.into());
+        self
+    }
+
+    pub fn tooltip(mut self, tooltip: impl Into<String>) -> Self {
+        self.tooltip = Some(tooltip.into());
+        self
+    }
+
+    pub fn enabled(mut self, enabled: bool) -> Self {
+        self.enabled = Some(enabled);
+        self
+    }
+
+    pub fn visible(mut self, visible: bool) -> Self {
+        self.visible = Some(visible);
+        self
+    }
+}
+
+/// Payload of the optional app event emitted for a button click.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClickEvent {
+    pub id: u32,
+    pub window: String,
+}
+
+/// Called on the window's UI thread when a button is clicked.
+///
+/// The handler must not block: it runs inside the window procedure, so long
+/// work should be forwarded to another thread or channel.
+pub type ButtonHandler = Box<dyn Fn(&str, u32) + Send + Sync + 'static>;
+
+#[derive(Debug, Clone)]
+pub(crate) struct ButtonState {
+    pub id: u32,
+    pub icon: String,
+    pub tooltip: String,
+    pub enabled: bool,
+    pub visible: bool,
+    pub event: Option<String>,
+}
+
+impl ButtonState {
+    pub(crate) fn new(button: Button, icon: String) -> Self {
+        Self {
+            id: button.id,
+            icon,
+            tooltip: button.tooltip,
+            enabled: button.enabled,
+            visible: button.visible,
+            event: button.event,
         }
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(default, rename_all = "camelCase")]
-pub struct IconPaths {
-    pub previous: String,
-    pub previous_disabled: String,
-    pub play: String,
-    pub pause: String,
-    pub next: String,
-    pub next_disabled: String,
-}
-
-impl Default for IconPaths {
-    fn default() -> Self {
-        Self {
-            previous: "icons/taskbar/PREV_THUMB.ico".to_string(),
-            previous_disabled: "icons/taskbar/PREV_THUMB_DISABLED.ico".to_string(),
-            play: "icons/taskbar/PLAY_THUMB.ico".to_string(),
-            pause: "icons/taskbar/PAUSE_THUMB.ico".to_string(),
-            next: "icons/taskbar/NEXT_THUMB.ico".to_string(),
-            next_disabled: "icons/taskbar/NEXT_THUMB_DISABLED.ico".to_string(),
-        }
+impl From<Button> for ButtonState {
+    fn from(button: Button) -> Self {
+        let icon = button.icon.clone();
+        Self::new(button, icon)
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(default, rename_all = "camelCase")]
-pub struct EventNames {
-    pub previous: String,
-    pub toggle: String,
-    pub next: String,
+pub(crate) struct WindowState {
+    pub hwnd: isize,
+    pub buttons: Mutex<Vec<ButtonState>>,
 }
 
-impl Default for EventNames {
-    fn default() -> Self {
-        Self {
-            previous: "media-prev".to_string(),
-            toggle: "media-toggle".to_string(),
-            next: "media-next".to_string(),
+pub(crate) fn validate_buttons(buttons: &[Button]) -> Result<()> {
+    if buttons.is_empty() {
+        return Err(Error::Message("at least one button is required".into()));
+    }
+    if buttons.len() > MAX_BUTTONS {
+        return Err(Error::Message(format!(
+            "at most {MAX_BUTTONS} buttons are supported"
+        )));
+    }
+
+    let mut ids = HashSet::with_capacity(buttons.len());
+    for button in buttons {
+        if button.id == 0 || button.id > MAX_BUTTON_ID {
+            return Err(Error::Message(format!(
+                "button id {} must be in 1..={MAX_BUTTON_ID}",
+                button.id
+            )));
+        }
+        if !ids.insert(button.id) {
+            return Err(Error::Message(format!("duplicate button id {}", button.id)));
+        }
+        if !button.icon.to_ascii_lowercase().ends_with(".ico") {
+            return Err(Error::Message(format!(
+                "button {} icon must be an .ico resource path",
+                button.id
+            )));
+        }
+        if button
+            .event
+            .as_ref()
+            .is_some_and(|event| event.trim().is_empty())
+        {
+            return Err(Error::Message(format!(
+                "button {} event name must not be empty",
+                button.id
+            )));
         }
     }
+
+    Ok(())
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(default, rename_all = "camelCase")]
-pub struct Tooltips {
-    pub previous: String,
-    pub play: String,
-    pub pause: String,
-    pub next: String,
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-impl Default for Tooltips {
-    fn default() -> Self {
-        Self {
-            previous: "Previous".to_string(),
-            play: "Play".to_string(),
-            pause: "Pause".to_string(),
-            next: "Next".to_string(),
-        }
+    fn buttons(count: usize) -> Vec<Button> {
+        (1..=count)
+            .map(|id| Button::new(id as u32, format!("icons/{id}.ico")))
+            .collect()
+    }
+
+    #[test]
+    fn accepts_valid_buttons() {
+        assert!(validate_buttons(&buttons(7)).is_ok());
+    }
+
+    #[test]
+    fn rejects_empty_button_list() {
+        assert!(validate_buttons(&[]).is_err());
+    }
+
+    #[test]
+    fn rejects_more_than_seven_buttons() {
+        assert!(validate_buttons(&buttons(8)).is_err());
+    }
+
+    #[test]
+    fn rejects_duplicate_ids() {
+        let list = vec![Button::new(1, "icons/a.ico"), Button::new(1, "icons/b.ico")];
+        assert!(validate_buttons(&list).is_err());
+    }
+
+    #[test]
+    fn rejects_zero_and_overflow_ids() {
+        assert!(validate_buttons(&[Button::new(0, "icons/a.ico")]).is_err());
+        assert!(validate_buttons(&[Button::new(65536, "icons/a.ico")]).is_err());
+        assert!(validate_buttons(&[Button::new(65535, "icons/a.ico")]).is_ok());
+    }
+
+    #[test]
+    fn rejects_non_ico_icons() {
+        assert!(validate_buttons(&[Button::new(1, "icons/a.png")]).is_err());
+        assert!(validate_buttons(&[Button::new(1, "icons/a.ICO")]).is_ok());
+    }
+
+    #[test]
+    fn rejects_empty_event_names() {
+        let button = Button::new(1, "icons/a.ico").event("  ");
+        assert!(validate_buttons(&[button]).is_err());
     }
 }

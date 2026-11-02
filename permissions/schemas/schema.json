@@ -319,34 +319,22 @@
           "markdownDescription": "Denies the is_supported command without any pre-configured scope."
         },
         {
-          "description": "Enables the set_navigation_enabled command without any pre-configured scope.",
+          "description": "Enables the update command without any pre-configured scope.",
           "type": "string",
-          "const": "allow-set-navigation-enabled",
-          "markdownDescription": "Enables the set_navigation_enabled command without any pre-configured scope."
+          "const": "allow-update",
+          "markdownDescription": "Enables the update command without any pre-configured scope."
         },
         {
-          "description": "Denies the set_navigation_enabled command without any pre-configured scope.",
+          "description": "Denies the update command without any pre-configured scope.",
           "type": "string",
-          "const": "deny-set-navigation-enabled",
-          "markdownDescription": "Denies the set_navigation_enabled command without any pre-configured scope."
+          "const": "deny-update",
+          "markdownDescription": "Denies the update command without any pre-configured scope."
         },
         {
-          "description": "Enables the set_playback_state command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-set-playback-state",
-          "markdownDescription": "Enables the set_playback_state command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the set_playback_state command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-set-playback-state",
-          "markdownDescription": "Denies the set_playback_state command without any pre-configured scope."
-        },
-        {
-          "description": "Enables standard taskbar control commands for this plugin.\n#### This default permission set includes:\n\n- `allow-initialize`\n- `allow-set-playback-state`\n- `allow-set-navigation-enabled`\n- `allow-is-supported`",
+          "description": "Enables thumbnail toolbar control commands for this plugin.\n#### This default permission set includes:\n\n- `allow-initialize`\n- `allow-update`\n- `allow-is-supported`",
           "type": "string",
           "const": "default",
-          "markdownDescription": "Enables standard taskbar control commands for this plugin.\n#### This default permission set includes:\n\n- `allow-initialize`\n- `allow-set-playback-state`\n- `allow-set-navigation-enabled`\n- `allow-is-supported`"
+          "markdownDescription": "Enables thumbnail toolbar control commands for this plugin.\n#### This default permission set includes:\n\n- `allow-initialize`\n- `allow-update`\n- `allow-is-supported`"
         }
       ]
     }

@@ -1,43 +1,37 @@
-export interface TaskbarEventNames {
-    previous?: string;
-    toggle?: string;
-    next?: string;
+export interface ThumbarButton {
+    /** Unique identifier within the window, in 1..=65535. */
+    id: number;
+    /** Tauri resource path to an .ico file. */
+    icon: string;
+    tooltip?: string;
+    enabled?: boolean;
+    visible?: boolean;
+    /** Optional app event emitted when the button is clicked. */
+    event?: string;
 }
-export interface TaskbarTooltips {
-    previous?: string;
-    play?: string;
-    pause?: string;
-    next?: string;
+export interface ThumbarButtonUpdate {
+    id: number;
+    icon?: string;
+    tooltip?: string;
+    enabled?: boolean;
+    visible?: boolean;
 }
-export interface TaskbarIconPaths {
-    previous?: string;
-    previousDisabled?: string;
-    play?: string;
-    pause?: string;
-    next?: string;
-    nextDisabled?: string;
-}
-export interface TaskbarPluginConfig {
-    autoAttach?: boolean;
-    windowLabel?: string;
-    events?: TaskbarEventNames;
-    tooltips?: TaskbarTooltips;
-    icons?: TaskbarIconPaths;
+export interface ThumbarClickEvent {
+    id: number;
+    window: string;
 }
 /**
- * Explicitly attach taskbar thumbnail buttons to the current window.
- * Usually optional when autoAttach is enabled in plugin config.
+ * Adds the complete thumbnail toolbar button list to the current window.
+ *
+ * Windows only allows buttons to be added once per window. Call `update` for
+ * subsequent changes; at most 7 buttons are supported.
  */
-export declare function initialize(): Promise<void>;
+export declare function initialize(buttons: ThumbarButton[]): Promise<void>;
 /**
- * Updates the play/pause thumbnail button icon and tooltip.
+ * Updates an existing button's icon, tooltip, enabled or visible state.
  */
-export declare function setPlaybackState(isPlaying: boolean): Promise<void>;
+export declare function update(button: ThumbarButtonUpdate): Promise<void>;
 /**
- * Updates enabled state + icon state for previous/next thumbnail buttons.
- */
-export declare function setNavigationEnabled(previousEnabled: boolean, nextEnabled: boolean): Promise<void>;
-/**
- * Returns whether the current platform supports this plugin's native behavior.
+ * Returns whether the current platform supports native thumbnail toolbars.
  */
 export declare function isSupported(): Promise<boolean>;

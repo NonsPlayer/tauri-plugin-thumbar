@@ -1,6 +1,6 @@
-# tauri-plugin-taskbar
+# tauri-plugin-thumbar
 
-Windows taskbar thumbnail toolbar controls for Tauri applications.
+Runtime-defined Windows taskbar thumbnail toolbar controls for Tauri applications.
 
 | Platform | Supported |
 | --- | --- |
@@ -10,6 +10,11 @@ Windows taskbar thumbnail toolbar controls for Tauri applications.
 | Android | ~ no-op fallback |
 | iOS | ~ no-op fallback |
 
+The button list is supplied at runtime. Windows only lets an application add
+buttons to a window's thumbnail toolbar once, so `initialize` takes the complete
+list (up to 7 buttons) and `update` changes icon, tooltip, enabled and visible
+state afterwards.
+
 ## Install
 
 This plugin targets Tauri v2 and Rust 1.77.2+.
@@ -18,15 +23,13 @@ Add the Rust crate to your `src-tauri/Cargo.toml`:
 
 ```toml
 [dependencies]
-tauri-plugin-taskbar = "0.1.0"
+tauri-plugin-thumbar = "0.1.0"
 ```
 
 Add the JS bindings package:
 
 ```sh
-pnpm add tauri-plugin-taskbar
-# or npm add tauri-plugin-taskbar
-# or yarn add tauri-plugin-taskbar
+pnpm add tauri-plugin-thumbar
 ```
 
 ## Rust setup
@@ -36,73 +39,115 @@ Register the plugin in your Tauri builder:
 ```rust
 fn run() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_taskbar::init())
+        .plugin(tauri_plugin_thumbar::init())
         .run(tauri::generate_context!())
         .expect("error while running tauri app");
 }
 ```
 
-## Configuration
+Initialize the toolbar from the app setup hook:
 
-Configure the plugin in `tauri.conf.json` under `plugins.taskbar`:
+```rust
+use tauri::Manager;
+use tauri_plugin_thumbar::{Button, ThumbarExt};
 
-```json
-{
-  "plugins": {
-    "taskbar": {
-      "autoAttach": true,
-      "windowLabel": "main",
-      "events": {
-        "previous": "media-prev",
-        "toggle": "media-toggle",
-        "next": "media-next"
-      },
-      "tooltips": {
-        "previous": "Previous",
-        "play": "Play",
-        "pause": "Pause",
-        "next": "Next"
-      },
-      "icons": {
-        "previous": "icons/taskbar/PREV_THUMB.ico",
-        "previousDisabled": "icons/taskbar/PREV_THUMB_DISABLED.ico",
-        "play": "icons/taskbar/PLAY_THUMB.ico",
-        "pause": "icons/taskbar/PAUSE_THUMB.ico",
-        "next": "icons/taskbar/NEXT_THUMB.ico",
-        "nextDisabled": "icons/taskbar/NEXT_THUMB_DISABLED.ico"
-      }
-    }
-  }
-}
+tauri::Builder::default()
+    .plugin(tauri_plugin_thumbar::init())
+    .setup(|app| {
+        let window = app.get_webview_window("main").unwrap();
+
+        app.thumbar().initialize(
+            &window,
+            vec![
+                Button::new(1, "icons/thumbar/previous.ico")
+                    .tooltip("Previous")
+                    .event("thumbar-previous"),
+                Button::new(2, "icons/thumbar/play.ico")
+                    .tooltip("Play")
+                    .event("thumbar-toggle"),
+                Button::new(3, "icons/thumbar/next.ico")
+                    .tooltip("Next")
+                    .event("thumbar-next"),
+            ],
+            Some(Box::new(|window, id| {
+                // Runs on the window's UI thread. Do not block; forward to a
+                // channel or another thread instead.
+                let _ = (window, id);
+            })),
+        )?;
+
+        Ok(())
+    })
 ```
+
+Update a button later:
+
+```rust
+use tauri_plugin_thumbar::ButtonUpdate;
+
+app.thumbar().update(
+    &window,
+    ButtonUpdate::new(2)
+        .icon("icons/thumbar/pause.ico")
+        .tooltip("Pause"),
+)?;
+
+app.thumbar().update(&window, ButtonUpdate::new(3).enabled(false))?;
+```
+
+## Buttons
+
+- At most **7** buttons are supported by the Windows thumbnail toolbar.
+- `id` must be unique within the window and in `1..=65535`.
+- `icon` is a Tauri resource path to an `.ico` file. Bundle the file through
+  `tauri.conf.json` (`bundle.resources`).
+- `enabled` and `visible` default to `true`.
+- `event` is optional. When set, the plugin emits that app event on click with
+  `{ id, window }` as the payload.
+
+Buttons can only be added once per window. Use `update` to change the icon,
+tooltip, enabled or visible state; use `visible: false` to hide a button instead
+of removing it.
 
 ## JavaScript usage
 
-```ts
-import {
-  initialize,
-  isSupported,
-  setNavigationEnabled,
-  setPlaybackState
-} from 'tauri-plugin-taskbar'
+Add the plugin's default permission to your capability (for example
+`src-tauri/capabilities/default.json`):
 
-if (await isSupported()) {
-  await initialize()
-  await setPlaybackState(true)
-  await setNavigationEnabled(true, true)
+```json
+{
+  "permissions": ["thumbar:default"]
 }
 ```
 
-## Emitted events
+```ts
+import { initialize, isSupported, update } from 'tauri-plugin-thumbar'
+import { listen } from '@tauri-apps/api/event'
 
-When taskbar buttons are clicked, this plugin emits app events:
+if (await isSupported()) {
+  await initialize([
+    { id: 1, icon: 'icons/thumbar/previous.ico', tooltip: 'Previous', event: 'thumbar-previous' },
+    { id: 2, icon: 'icons/thumbar/play.ico', tooltip: 'Play', event: 'thumbar-toggle' },
+    { id: 3, icon: 'icons/thumbar/next.ico', tooltip: 'Next', event: 'thumbar-next' }
+  ])
 
-- `events.previous` (default: `media-prev`)
-- `events.toggle` (default: `media-toggle`)
-- `events.next` (default: `media-next`)
+  await update({ id: 2, icon: 'icons/thumbar/pause.ico', tooltip: 'Pause' })
+
+  const unlisten = await listen<{ id: number; window: string }>('thumbar-toggle', (event) => {
+    console.log(event.payload.id, event.payload.window)
+  })
+}
+```
 
 ## Production notes
 
-- This plugin does **not** set App User Model ID (AUMID). Keep AUMID setup in your app entrypoint.
+- This plugin does **not** set App User Model ID (AUMID). Set it once in your
+  app entrypoint if you need a stable shell identity for notifications, jump
+  lists or taskbar pinning.
 - Ensure configured icon files are included as Tauri bundle resources.
-- Non-Windows platforms intentionally succeed with no-op behavior for cross-platform safety.
+- Non-Windows platforms intentionally succeed with no-op behavior for
+  cross-platform safety.
+- The Rust click handler runs inside the window procedure on the UI thread.
+  Keep it non-blocking.
+- If Explorer restarts, the plugin re-adds the current button state when the
+  taskbar button is recreated.

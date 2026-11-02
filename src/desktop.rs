@@ -1,153 +1,153 @@
 #[cfg(target_os = "windows")]
 mod platform {
+    use std::collections::HashMap;
+    use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::{Arc, Mutex};
 
-    use tauri::{path::BaseDirectory, Emitter, Manager, Runtime, WebviewWindow};
+    use tauri::{path::BaseDirectory, AppHandle, Emitter, Manager, Runtime, WebviewWindow};
     use windows::core::PCWSTR;
     use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
     use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
-    use windows::Win32::UI::Shell::THBF_DISABLED;
     use windows::Win32::UI::Shell::{
         DefSubclassProc, ITaskbarList3, RemoveWindowSubclass, SetWindowSubclass, TaskbarList,
-        THBF_ENABLED, THBN_CLICKED, THB_FLAGS, THB_ICON, THB_TOOLTIP, THUMBBUTTON,
+        THBF_DISABLED, THBF_ENABLED, THBF_HIDDEN, THBN_CLICKED, THB_FLAGS, THB_ICON, THB_TOOLTIP,
+        THUMBBUTTON, THUMBBUTTONFLAGS,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
-        DestroyIcon, HICON, IMAGE_ICON, LR_DEFAULTSIZE, LR_LOADFROMFILE, LoadImageW,
-        PostMessageW, RegisterWindowMessageW, WM_COMMAND, WM_NCDESTROY, WM_USER,
+        DestroyIcon, LoadImageW, PostMessageW, RegisterWindowMessageW, HICON, IMAGE_ICON,
+        LR_DEFAULTSIZE, LR_LOADFROMFILE, WM_COMMAND, WM_NCDESTROY, WM_USER,
     };
 
     use crate::error::{Error, Result};
-    use crate::models::Config;
+    use crate::models::{
+        Button, ButtonHandler, ButtonState, ButtonUpdate, ClickEvent, WindowState,
+    };
 
     const SUBCLASS_ID: usize = 4242;
-
-    const BTN_PREV: u32 = 1001;
-    const BTN_PLAY_PAUSE: u32 = 1002;
-    const BTN_NEXT: u32 = 1003;
-
-    const WM_USER_UPDATE_TASKBAR: u32 = WM_USER + 1;
-    const WM_USER_UPDATE_NAV_BUTTONS: u32 = WM_USER + 2;
+    const WM_USER_UPDATE: u32 = WM_USER + 1;
 
     static TASKBAR_CREATED_MSG_ID: AtomicU32 = AtomicU32::new(0);
 
-    struct TaskbarContext {
+    type EventEmitter = Box<dyn Fn(&str, u32) + Send + Sync>;
+
+    struct Context {
+        hwnd: HWND,
+        label: String,
+        state: Arc<WindowState>,
         taskbar: Option<ITaskbarList3>,
-        buttons_added: bool,
-        emit_event: Box<dyn Fn(&str) + Send + Sync>,
-        event_previous: String,
-        event_toggle: String,
-        event_next: String,
-        tooltip_previous: String,
-        tooltip_play: String,
-        tooltip_pause: String,
-        tooltip_next: String,
-        icon_prev: HICON,
-        icon_prev_disabled: HICON,
-        icon_play: HICON,
-        icon_pause: HICON,
-        icon_next: HICON,
-        icon_next_disabled: HICON,
+        added: bool,
+        icons: HashMap<PathBuf, HICON>,
+        handler: Option<ButtonHandler>,
+        emit: EventEmitter,
     }
 
-    pub fn attach<R: Runtime>(window: &WebviewWindow<R>, config: &Config) -> Result<()> {
-        let hwnd = HWND(
-            window
-                .hwnd()
-                .map_err(|e| Error::Message(format!("failed to get window handle: {e}")))?
-                .0 as _,
-        );
-
-        if TASKBAR_CREATED_MSG_ID.load(Ordering::Relaxed) == 0 {
-            let msg_name = wide_string("TaskbarButtonCreated");
-            let msg_id = unsafe { RegisterWindowMessageW(PCWSTR(msg_name.as_ptr())) };
-            TASKBAR_CREATED_MSG_ID.store(msg_id, Ordering::Relaxed);
-        }
-
+    pub fn attach<R: Runtime>(
+        window: &WebviewWindow<R>,
+        buttons: Vec<Button>,
+        handler: Option<ButtonHandler>,
+    ) -> Result<Arc<WindowState>> {
+        let hwnd = window
+            .hwnd()
+            .map_err(|error| Error::Message(format!("failed to get window handle: {error}")))?;
+        let label = window.label().to_string();
         let app = window.app_handle().clone();
 
-        let icon_prev = load_hicon_from_resource(&app, &config.icons.previous)?;
-        let icon_prev_disabled = load_hicon_from_resource(&app, &config.icons.previous_disabled)?;
-        let icon_play = load_hicon_from_resource(&app, &config.icons.play)?;
-        let icon_pause = load_hicon_from_resource(&app, &config.icons.pause)?;
-        let icon_next = load_hicon_from_resource(&app, &config.icons.next)?;
-        let icon_next_disabled = load_hicon_from_resource(&app, &config.icons.next_disabled)?;
+        let mut states = Vec::with_capacity(buttons.len());
+        let mut icons = HashMap::with_capacity(buttons.len());
+        for button in buttons {
+            let path = resolve_icon(&app, &button.icon)?;
+            if !icons.contains_key(&path) {
+                let icon = unsafe { load_icon(&path)? };
+                icons.insert(path.clone(), icon);
+            }
+            states.push(ButtonState::new(
+                button,
+                path.to_string_lossy().into_owned(),
+            ));
+        }
 
-        let emit_event: Box<dyn Fn(&str) + Send + Sync> = {
-            let app = app.clone();
-            Box::new(move |event_name| {
-                let _ = app.emit(event_name, ());
-            })
-        };
-
-        let context = Box::new(TaskbarContext {
-            taskbar: None,
-            buttons_added: false,
-            emit_event,
-            event_previous: config.events.previous.clone(),
-            event_toggle: config.events.toggle.clone(),
-            event_next: config.events.next.clone(),
-            tooltip_previous: config.tooltips.previous.clone(),
-            tooltip_play: config.tooltips.play.clone(),
-            tooltip_pause: config.tooltips.pause.clone(),
-            tooltip_next: config.tooltips.next.clone(),
-            icon_prev,
-            icon_prev_disabled,
-            icon_play,
-            icon_pause,
-            icon_next,
-            icon_next_disabled,
+        let state = Arc::new(WindowState {
+            hwnd: hwnd.0 as isize,
+            buttons: Mutex::new(states),
         });
 
+        let emit_label = label.clone();
+        let emit: EventEmitter = Box::new(move |event: &str, id: u32| {
+            let _ = app.emit(
+                event,
+                ClickEvent {
+                    id,
+                    window: emit_label.clone(),
+                },
+            );
+        });
+
+        let context = Box::new(Context {
+            hwnd,
+            label,
+            state: state.clone(),
+            taskbar: None,
+            added: false,
+            icons,
+            handler,
+            emit,
+        });
         let context_ptr = Box::into_raw(context);
 
         unsafe {
             let _ = SetWindowSubclass(hwnd, Some(subclass_proc), SUBCLASS_ID, context_ptr as usize);
-            let msg_id = TASKBAR_CREATED_MSG_ID.load(Ordering::Relaxed);
-            if msg_id != 0 {
-                let _ = PostMessageW(Some(hwnd), msg_id, WPARAM(0), LPARAM(0));
+            let message = taskbar_created_message_id();
+            if message != 0 {
+                let _ = PostMessageW(Some(hwnd), message, WPARAM(0), LPARAM(0));
             }
         }
 
-        Ok(())
+        Ok(state)
     }
 
-    pub fn update_playback_state<R: Runtime>(
+    pub fn update<R: Runtime>(
         window: &WebviewWindow<R>,
-        is_playing: bool,
+        state: &Arc<WindowState>,
+        update: ButtonUpdate,
     ) -> Result<()> {
-        let hwnd = HWND(
-            window
-                .hwnd()
-                .map_err(|e| Error::Message(format!("failed to get window handle: {e}")))?
-                .0 as _,
-        );
+        let icon = match update.icon.as_deref() {
+            Some(relative) => Some(resolve_icon(window.app_handle(), relative)?),
+            None => None,
+        };
 
-        let wparam = WPARAM(if is_playing { 1 } else { 0 });
-        unsafe {
-            let _ = PostMessageW(Some(hwnd), WM_USER_UPDATE_TASKBAR, wparam, LPARAM(0));
+        {
+            let mut buttons = state
+                .buttons
+                .lock()
+                .map_err(|_| Error::Message("thumbar button state is poisoned".into()))?;
+            let button = buttons
+                .iter_mut()
+                .find(|button| button.id == update.id)
+                .ok_or_else(|| Error::Message(format!("unknown button id {}", update.id)))?;
+
+            if let Some(path) = icon {
+                button.icon = path.to_string_lossy().into_owned();
+            }
+            if let Some(tooltip) = update.tooltip {
+                button.tooltip = tooltip;
+            }
+            if let Some(enabled) = update.enabled {
+                button.enabled = enabled;
+            }
+            if let Some(visible) = update.visible {
+                button.visible = visible;
+            }
         }
 
-        Ok(())
-    }
-
-    pub fn update_navigation_enabled<R: Runtime>(
-        window: &WebviewWindow<R>,
-        previous_enabled: bool,
-        next_enabled: bool,
-    ) -> Result<()> {
-        let hwnd = HWND(
-            window
-                .hwnd()
-                .map_err(|e| Error::Message(format!("failed to get window handle: {e}")))?
-                .0 as _,
-        );
-
-        let wparam_value =
-            (if previous_enabled { 1 } else { 0 }) | ((if next_enabled { 1 } else { 0 }) << 8);
-        let wparam = WPARAM(wparam_value);
-
         unsafe {
-            let _ = PostMessageW(Some(hwnd), WM_USER_UPDATE_NAV_BUTTONS, wparam, LPARAM(0));
+            PostMessageW(
+                Some(HWND(state.hwnd as _)),
+                WM_USER_UPDATE,
+                WPARAM(0),
+                LPARAM(0),
+            )
+            .map_err(|error| Error::Message(format!("failed to post thumbar update: {error}")))?;
         }
 
         Ok(())
@@ -161,92 +161,29 @@ mod platform {
         u_id_subclass: usize,
         dw_ref_data: usize,
     ) -> LRESULT {
-        let context = &mut *(dw_ref_data as *mut TaskbarContext);
+        let context = &mut *(dw_ref_data as *mut Context);
 
-        if msg == TASKBAR_CREATED_MSG_ID.load(Ordering::Relaxed) {
+        let created_message = TASKBAR_CREATED_MSG_ID.load(Ordering::Relaxed);
+        if created_message != 0 && msg == created_message {
             context.taskbar = None;
-            context.buttons_added = false;
+            context.added = false;
 
-            match initialize_taskbar_interface(hwnd, context) {
-                Ok(tb) => {
-                    context.taskbar = Some(tb);
-                    context.buttons_added = true;
-                }
-                Err(err) => {
-                    log::error!("taskbar init failed: {err}");
-                }
+            if let Err(error) = initialize_taskbar(context) {
+                log::error!("thumbar: failed to add buttons: {error}");
             }
 
             return DefSubclassProc(hwnd, msg, wparam, lparam);
         }
 
-        if msg == WM_USER_UPDATE_TASKBAR {
-            if let Some(ref taskbar) = context.taskbar {
-                if context.buttons_added {
-                    let is_playing = wparam.0 != 0;
-                    let h_icon = if is_playing {
-                        context.icon_pause
-                    } else {
-                        context.icon_play
-                    };
-
-                    let mut btn = THUMBBUTTON {
-                        dwMask: THB_ICON | THB_TOOLTIP,
-                        iId: BTN_PLAY_PAUSE,
-                        hIcon: h_icon,
-                        szTip: [0; 260],
-                        ..Default::default()
-                    };
-
-                    let tip = if is_playing {
-                        context.tooltip_pause.as_str()
-                    } else {
-                        context.tooltip_play.as_str()
-                    };
-                    set_wide_string(&mut btn.szTip, tip);
-
-                    let _ = taskbar.ThumbBarUpdateButtons(hwnd, &[btn]);
-                }
-            }
-
-            return LRESULT(0);
-        }
-
-        if msg == WM_USER_UPDATE_NAV_BUTTONS {
-            if let Some(ref taskbar) = context.taskbar {
-                if context.buttons_added {
-                    let prev_enabled = (wparam.0 & 0xFF) != 0;
-                    let next_enabled = ((wparam.0 >> 8) & 0xFF) != 0;
-
-                    let (prev_flags, prev_icon) = if prev_enabled {
-                        (THBF_ENABLED, context.icon_prev)
-                    } else {
-                        (THBF_DISABLED, context.icon_prev_disabled)
-                    };
-                    let (next_flags, next_icon) = if next_enabled {
-                        (THBF_ENABLED, context.icon_next)
-                    } else {
-                        (THBF_DISABLED, context.icon_next_disabled)
-                    };
-
-                    let buttons = [
-                        THUMBBUTTON {
-                            dwMask: THB_FLAGS | THB_ICON,
-                            iId: BTN_PREV,
-                            hIcon: prev_icon,
-                            dwFlags: prev_flags,
-                            ..Default::default()
-                        },
-                        THUMBBUTTON {
-                            dwMask: THB_FLAGS | THB_ICON,
-                            iId: BTN_NEXT,
-                            hIcon: next_icon,
-                            dwFlags: next_flags,
-                            ..Default::default()
-                        },
-                    ];
-
-                    let _ = taskbar.ThumbBarUpdateButtons(hwnd, &buttons);
+        if msg == WM_USER_UPDATE {
+            if context.added {
+                let buttons = build_buttons(context);
+                if !buttons.is_empty() {
+                    if let Some(taskbar) = &context.taskbar {
+                        if let Err(error) = taskbar.ThumbBarUpdateButtons(context.hwnd, &buttons) {
+                            log::error!("thumbar: failed to update buttons: {error}");
+                        }
+                    }
                 }
             }
 
@@ -255,110 +192,185 @@ mod platform {
 
         if msg == WM_COMMAND {
             let high = (wparam.0 >> 16) & 0xFFFF;
-            let low = wparam.0 & 0xFFFF;
+            let id = (wparam.0 & 0xFFFF) as u32;
 
             if high as u32 == THBN_CLICKED {
-                let event_name = match low as u32 {
-                    BTN_PREV => Some(context.event_previous.as_str()),
-                    BTN_PLAY_PAUSE => Some(context.event_toggle.as_str()),
-                    BTN_NEXT => Some(context.event_next.as_str()),
-                    _ => None,
-                };
+                let click = context.state.buttons.lock().ok().and_then(|buttons| {
+                    buttons
+                        .iter()
+                        .find(|button| button.id == id)
+                        .map(|button| button.event.clone())
+                });
 
-                if let Some(event_name) = event_name {
-                    (context.emit_event)(event_name);
+                if let Some(event) = click {
+                    if let Some(handler) = &context.handler {
+                        handler(&context.label, id);
+                    }
+                    if let Some(event) = event {
+                        (context.emit)(&event, id);
+                    }
+
+                    return LRESULT(0);
                 }
-
-                return LRESULT(0);
             }
         }
 
         if msg == WM_NCDESTROY {
             let _ = RemoveWindowSubclass(hwnd, Some(subclass_proc), u_id_subclass);
-            let _ = DestroyIcon(context.icon_prev);
-            let _ = DestroyIcon(context.icon_prev_disabled);
-            let _ = DestroyIcon(context.icon_play);
-            let _ = DestroyIcon(context.icon_pause);
-            let _ = DestroyIcon(context.icon_next);
-            let _ = DestroyIcon(context.icon_next_disabled);
+            for icon in context.icons.values() {
+                let _ = DestroyIcon(*icon);
+            }
+            context.icons.clear();
             let _ = Box::from_raw(context);
         }
 
         DefSubclassProc(hwnd, msg, wparam, lparam)
     }
 
-    unsafe fn initialize_taskbar_interface(
-        hwnd: HWND,
-        context: &TaskbarContext,
-    ) -> windows::core::Result<ITaskbarList3> {
-        let taskbar: ITaskbarList3 = CoCreateInstance(&TaskbarList, None, CLSCTX_INPROC_SERVER)?;
-        taskbar.HrInit()?;
+    unsafe fn initialize_taskbar(context: &mut Context) -> Result<()> {
+        let taskbar: ITaskbarList3 = CoCreateInstance(&TaskbarList, None, CLSCTX_INPROC_SERVER)
+            .map_err(|error| Error::Message(format!("CoCreateInstance(TaskbarList): {error}")))?;
+        taskbar
+            .HrInit()
+            .map_err(|error| Error::Message(format!("ITaskbarList::HrInit: {error}")))?;
 
-        let mut buttons = [
-            THUMBBUTTON {
-                dwMask: THB_ICON | THB_TOOLTIP | THB_FLAGS,
-                iId: BTN_PREV,
-                hIcon: context.icon_prev,
-                szTip: [0; 260],
-                dwFlags: THBF_ENABLED,
-                ..Default::default()
-            },
-            THUMBBUTTON {
-                dwMask: THB_ICON | THB_TOOLTIP | THB_FLAGS,
-                iId: BTN_PLAY_PAUSE,
-                hIcon: context.icon_play,
-                szTip: [0; 260],
-                dwFlags: THBF_ENABLED,
-                ..Default::default()
-            },
-            THUMBBUTTON {
-                dwMask: THB_ICON | THB_TOOLTIP | THB_FLAGS,
-                iId: BTN_NEXT,
-                hIcon: context.icon_next,
-                szTip: [0; 260],
-                dwFlags: THBF_ENABLED,
-                ..Default::default()
-            },
-        ];
+        let buttons = build_buttons(context);
+        if buttons.is_empty() {
+            return Err(Error::Message("no thumbar buttons could be created".into()));
+        }
 
-        set_wide_string(&mut buttons[0].szTip, &context.tooltip_previous);
-        set_wide_string(&mut buttons[1].szTip, &context.tooltip_play);
-        set_wide_string(&mut buttons[2].szTip, &context.tooltip_next);
+        taskbar
+            .ThumbBarAddButtons(context.hwnd, &buttons)
+            .map_err(|error| Error::Message(format!("ThumbBarAddButtons: {error}")))?;
 
-        taskbar.ThumbBarAddButtons(hwnd, &buttons)?;
-        Ok(taskbar)
+        context.taskbar = Some(taskbar);
+        context.added = true;
+        Ok(())
     }
 
-    fn load_hicon_from_resource<R: Runtime>(app: &tauri::AppHandle<R>, rel: &str) -> Result<HICON> {
-        let path = app
-            .path()
-            .resolve(rel, BaseDirectory::Resource)
-            .map_err(|e| Error::Message(format!("failed to resolve resource path '{rel}': {e}")))?;
+    unsafe fn build_buttons(context: &mut Context) -> Vec<THUMBBUTTON> {
+        let buttons = match context.state.buttons.lock() {
+            Ok(buttons) => buttons.clone(),
+            Err(_) => {
+                log::error!("thumbar: button state is poisoned");
+                return Vec::new();
+            }
+        };
 
-        let wpath = wide_string(&path.to_string_lossy());
+        buttons
+            .iter()
+            .filter_map(|button| {
+                let path = Path::new(&button.icon);
+                let icon = context.icon(path)?;
+                Some(make_button(button, icon))
+            })
+            .collect()
+    }
 
-        unsafe {
-            let h = LoadImageW(
-                None,
-                PCWSTR(wpath.as_ptr()),
-                IMAGE_ICON,
-                0,
-                0,
-                LR_LOADFROMFILE | LR_DEFAULTSIZE,
-            )?;
-            Ok(HICON(h.0))
+    impl Context {
+        unsafe fn icon(&mut self, path: &Path) -> Option<HICON> {
+            if let Some(icon) = self.icons.get(path) {
+                return Some(*icon);
+            }
+
+            match load_icon(path) {
+                Ok(icon) => {
+                    self.icons.insert(path.to_path_buf(), icon);
+                    Some(icon)
+                }
+                Err(error) => {
+                    log::error!("thumbar: failed to load icon {}: {error}", path.display());
+                    None
+                }
+            }
         }
     }
 
-    fn wide_string(s: &str) -> Vec<u16> {
-        s.encode_utf16().chain(std::iter::once(0)).collect()
+    fn make_button(button: &ButtonState, icon: HICON) -> THUMBBUTTON {
+        let mut thumb = THUMBBUTTON {
+            dwMask: THB_ICON | THB_TOOLTIP | THB_FLAGS,
+            iId: button.id,
+            hIcon: icon,
+            dwFlags: button_flags(button),
+            ..Default::default()
+        };
+        set_wide_string(&mut thumb.szTip, &button.tooltip);
+        thumb
     }
 
-    fn set_wide_string(buf: &mut [u16; 260], s: &str) {
+    fn button_flags(button: &ButtonState) -> THUMBBUTTONFLAGS {
+        let flags = if button.enabled {
+            THBF_ENABLED
+        } else {
+            THBF_DISABLED
+        };
+        if button.visible {
+            flags
+        } else {
+            flags | THBF_HIDDEN
+        }
+    }
+
+    fn resolve_icon<R: Runtime>(app: &AppHandle<R>, relative: &str) -> Result<PathBuf> {
+        if !relative.to_ascii_lowercase().ends_with(".ico") {
+            return Err(Error::Message(format!(
+                "icon '{relative}' must be an .ico resource path"
+            )));
+        }
+
+        let path = app
+            .path()
+            .resolve(relative, BaseDirectory::Resource)
+            .map_err(|error| {
+                Error::Message(format!("failed to resolve icon '{relative}': {error}"))
+            })?;
+        if !path.is_file() {
+            return Err(Error::Message(format!(
+                "icon '{relative}' was not found as a bundled resource"
+            )));
+        }
+
+        Ok(path)
+    }
+
+    unsafe fn load_icon(path: &Path) -> Result<HICON> {
+        let wide = wide_string(&path.to_string_lossy());
+        let icon = LoadImageW(
+            None,
+            PCWSTR(wide.as_ptr()),
+            IMAGE_ICON,
+            0,
+            0,
+            LR_LOADFROMFILE | LR_DEFAULTSIZE,
+        )
+        .map_err(|error| {
+            Error::Message(format!("failed to load icon '{}': {error}", path.display()))
+        })?;
+
+        Ok(HICON(icon.0))
+    }
+
+    fn taskbar_created_message_id() -> u32 {
+        let message = TASKBAR_CREATED_MSG_ID.load(Ordering::Relaxed);
+        if message != 0 {
+            return message;
+        }
+
+        let name = wide_string("TaskbarButtonCreated");
+        let message = unsafe { RegisterWindowMessageW(PCWSTR(name.as_ptr())) };
+        TASKBAR_CREATED_MSG_ID.store(message, Ordering::Relaxed);
+        message
+    }
+
+    fn wide_string(value: &str) -> Vec<u16> {
+        value.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    fn set_wide_string(buf: &mut [u16; 260], value: &str) {
         let mut count = 0;
-        for (idx, code_unit) in s.encode_utf16().enumerate().take(259) {
-            buf[idx] = code_unit;
-            count = idx + 1;
+        for (index, code_unit) in value.encode_utf16().enumerate().take(259) {
+            buf[index] = code_unit;
+            count = index + 1;
         }
 
         if count < 260 {
@@ -369,28 +381,31 @@ mod platform {
 
 #[cfg(not(target_os = "windows"))]
 mod platform {
+    use std::sync::{Arc, Mutex};
+
     use tauri::{Runtime, WebviewWindow};
 
-    use crate::{error::Result, models::Config};
+    use crate::error::Result;
+    use crate::models::{Button, ButtonHandler, ButtonState, ButtonUpdate, WindowState};
 
-    pub fn attach<R: Runtime>(_window: &WebviewWindow<R>, _config: &Config) -> Result<()> {
-        Ok(())
+    pub fn attach<R: Runtime>(
+        _window: &WebviewWindow<R>,
+        buttons: Vec<Button>,
+        _handler: Option<ButtonHandler>,
+    ) -> Result<Arc<WindowState>> {
+        Ok(Arc::new(WindowState {
+            hwnd: 0,
+            buttons: Mutex::new(buttons.into_iter().map(ButtonState::from).collect()),
+        }))
     }
 
-    pub fn update_playback_state<R: Runtime>(
+    pub fn update<R: Runtime>(
         _window: &WebviewWindow<R>,
-        _is_playing: bool,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    pub fn update_navigation_enabled<R: Runtime>(
-        _window: &WebviewWindow<R>,
-        _previous_enabled: bool,
-        _next_enabled: bool,
+        _state: &Arc<WindowState>,
+        _update: ButtonUpdate,
     ) -> Result<()> {
         Ok(())
     }
 }
 
-pub use platform::{attach, update_navigation_enabled, update_playback_state};
+pub use platform::{attach, update};

@@ -1,11 +1,18 @@
-//! Windows taskbar thumbnail toolbar controls for Tauri applications.
+//! Runtime-defined Windows taskbar thumbnail toolbar controls for Tauri applications.
+//!
+//! Call [`Thumbar::initialize`] once per window with the complete button list.
+//! Windows only allows the button set to be added once per window; later changes
+//! go through [`Thumbar::update`], which can update icons, tooltips, enabled and
+//! visible state without re-adding buttons.
 
 mod commands;
 mod desktop;
 mod error;
 mod models;
 
-use std::{collections::HashSet, sync::Mutex};
+use std::collections::HashMap;
+use std::marker::PhantomData;
+use std::sync::{Arc, Mutex};
 
 use tauri::{
     plugin::{Builder, TauriPlugin},
@@ -13,121 +20,102 @@ use tauri::{
 };
 
 pub use error::{Error, Result};
-pub use models::{Config, EventNames, IconPaths, Tooltips};
+pub use models::{Button, ButtonHandler, ButtonUpdate, ClickEvent, MAX_BUTTONS};
 
-/// Taskbar plugin state and high-level Rust API.
-pub struct Taskbar<R: Runtime> {
-    // keep runtime generic without introducing extra trait bounds on R
-    _marker: std::marker::PhantomData<fn() -> R>,
-    config: Config,
-    attached_windows: Mutex<HashSet<String>>,
+use models::WindowState;
+
+/// Plugin state and the high-level Rust API.
+pub struct Thumbar<R: Runtime> {
+    // Keep the runtime generic without adding extra trait bounds on R.
+    _marker: PhantomData<fn() -> R>,
+    windows: Mutex<HashMap<String, Arc<WindowState>>>,
 }
 
-impl<R: Runtime> Taskbar<R> {
-    fn new(config: Config) -> Self {
+impl<R: Runtime> Thumbar<R> {
+    fn new() -> Self {
         Self {
-            _marker: std::marker::PhantomData::<fn() -> R>,
-            config,
-            attached_windows: Mutex::new(HashSet::new()),
+            _marker: PhantomData,
+            windows: Mutex::new(HashMap::new()),
         }
     }
 
-    /// Returns the active plugin configuration.
-    pub fn config(&self) -> &Config {
-        &self.config
-    }
+    /// Initializes the thumbnail toolbar for a window.
+    ///
+    /// The complete button list must be provided here. Windows only supports
+    /// up to [`MAX_BUTTONS`] buttons, and the list cannot be extended later.
+    /// Use [`Thumbar::update`] to change a button's icon, tooltip, enabled or
+    /// visible state.
+    ///
+    /// `handler` runs on the window's UI thread and must not block. It receives
+    /// the window label and the button id.
+    pub fn initialize(
+        &self,
+        window: &WebviewWindow<R>,
+        buttons: Vec<Button>,
+        handler: Option<ButtonHandler>,
+    ) -> Result<()> {
+        models::validate_buttons(&buttons)?;
 
-    fn ensure_attached_slot(&self, window_label: &str) -> bool {
-        self.attached_windows
-            .lock()
-            .expect("taskbar plugin state mutex poisoned")
-            .insert(window_label.to_string())
-    }
-
-    fn rollback_attached_slot(&self, window_label: &str) {
-        self.attached_windows
-            .lock()
-            .expect("taskbar plugin state mutex poisoned")
-            .remove(window_label);
-    }
-
-    fn remove_attached_slot(&self, window_label: &str) {
-        self.attached_windows
-            .lock()
-            .expect("taskbar plugin state mutex poisoned")
-            .remove(window_label);
-    }
-
-    fn ensure_attached(&self, window: &WebviewWindow<R>) -> Result<()> {
         let label = window.label().to_string();
+        let mut windows = self
+            .windows
+            .lock()
+            .map_err(|_| Error::Message("thumbar registry is poisoned".into()))?;
 
-        if !self.ensure_attached_slot(&label) {
-            return Ok(());
+        if windows.contains_key(&label) {
+            return Err(Error::Message(format!(
+                "thumbar is already initialized for window '{label}'"
+            )));
         }
 
-        if let Err(err) = desktop::attach(window, &self.config) {
-            self.rollback_attached_slot(&label);
-            return Err(err);
-        }
-
+        let state = desktop::attach(window, buttons, handler)?;
+        windows.insert(label, state);
         Ok(())
     }
 
-    /// Explicitly initializes taskbar thumbnail controls for the provided webview window.
-    pub fn initialize(&self, window: &WebviewWindow<R>) -> Result<()> {
-        self.ensure_attached(window)
+    /// Applies a partial update to an existing button.
+    pub fn update(&self, window: &WebviewWindow<R>, update: ButtonUpdate) -> Result<()> {
+        let label = window.label().to_string();
+        let state = {
+            let windows = self
+                .windows
+                .lock()
+                .map_err(|_| Error::Message("thumbar registry is poisoned".into()))?;
+            windows.get(&label).cloned().ok_or_else(|| {
+                Error::Message(format!("thumbar is not initialized for window '{label}'"))
+            })?
+        };
+
+        desktop::update(window, &state, update)
     }
 
-    /// Updates play/pause visual state on taskbar thumbnail buttons.
-    pub fn set_playback_state(&self, window: &WebviewWindow<R>, is_playing: bool) -> Result<()> {
-        self.ensure_attached(window)?;
-        desktop::update_playback_state(window, is_playing)
-    }
-
-    /// Updates previous/next enabled state on taskbar thumbnail buttons.
-    pub fn set_navigation_enabled(
-        &self,
-        window: &WebviewWindow<R>,
-        previous_enabled: bool,
-        next_enabled: bool,
-    ) -> Result<()> {
-        self.ensure_attached(window)?;
-        desktop::update_navigation_enabled(window, previous_enabled, next_enabled)
-    }
-
-    /// Returns whether native taskbar thumbnail behavior is supported.
+    /// Returns whether native thumbnail toolbar behavior is supported.
     pub const fn is_supported() -> bool {
         cfg!(target_os = "windows")
     }
-}
 
-/// Extensions to access the taskbar plugin APIs from app-level managers.
-pub trait TaskbarExt<R: Runtime> {
-    fn taskbar(&self) -> &Taskbar<R>;
-}
-
-impl<R: Runtime, T: Manager<R>> TaskbarExt<R> for T {
-    fn taskbar(&self) -> &Taskbar<R> {
-        self.state::<Taskbar<R>>().inner()
+    fn remove(&self, label: &str) {
+        if let Ok(mut windows) = self.windows.lock() {
+            windows.remove(label);
+        }
     }
 }
 
-pub fn init<R: Runtime>() -> TauriPlugin<R, Option<Config>> {
-    Builder::<R, Option<Config>>::new("taskbar")
-        .setup(|app, api| {
-            let config = api.config().clone().unwrap_or_default();
-            let taskbar = Taskbar::<R>::new(config.clone());
+/// Extensions to access the thumbar plugin APIs from app-level managers.
+pub trait ThumbarExt<R: Runtime> {
+    fn thumbar(&self) -> &Thumbar<R>;
+}
 
-            if config.auto_attach {
-                if let Some(window) = app.get_webview_window(&config.window_label) {
-                    if let Err(err) = taskbar.initialize(&window) {
-                        log::error!("failed to auto-attach taskbar plugin in setup: {err}");
-                    }
-                }
-            }
+impl<R: Runtime, T: Manager<R>> ThumbarExt<R> for T {
+    fn thumbar(&self) -> &Thumbar<R> {
+        self.state::<Thumbar<R>>().inner()
+    }
+}
 
-            app.manage(taskbar);
-
+pub fn init<R: Runtime>() -> TauriPlugin<R> {
+    Builder::<R, ()>::new("thumbar")
+        .setup(|app, _api| {
+            app.manage(Thumbar::<R>::new());
             Ok(())
         })
         .on_event(|app, event| {
@@ -137,15 +125,14 @@ pub fn init<R: Runtime>() -> TauriPlugin<R, Option<Config>> {
                 ..
             } = event
             {
-                if let Some(taskbar) = app.try_state::<Taskbar<R>>() {
-                    taskbar.remove_attached_slot(label);
+                if let Some(thumbar) = app.try_state::<Thumbar<R>>() {
+                    thumbar.remove(label);
                 }
             }
         })
         .invoke_handler(tauri::generate_handler![
             commands::initialize,
-            commands::set_playback_state,
-            commands::set_navigation_enabled,
+            commands::update,
             commands::is_supported,
         ])
         .build()

@@ -1,66 +1,50 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from '@tauri-apps/api/core'
 
-export interface TaskbarEventNames {
-  previous?: string;
-  toggle?: string;
-  next?: string;
+export interface ThumbarButton {
+  /** Unique identifier within the window, in 1..=65535. */
+  id: number
+  /** Tauri resource path to an .ico file. */
+  icon: string
+  tooltip?: string
+  enabled?: boolean
+  visible?: boolean
+  /** Optional app event emitted when the button is clicked. */
+  event?: string
 }
 
-export interface TaskbarTooltips {
-  previous?: string;
-  play?: string;
-  pause?: string;
-  next?: string;
+export interface ThumbarButtonUpdate {
+  id: number
+  icon?: string
+  tooltip?: string
+  enabled?: boolean
+  visible?: boolean
 }
 
-export interface TaskbarIconPaths {
-  previous?: string;
-  previousDisabled?: string;
-  play?: string;
-  pause?: string;
-  next?: string;
-  nextDisabled?: string;
-}
-
-export interface TaskbarPluginConfig {
-  autoAttach?: boolean;
-  windowLabel?: string;
-  events?: TaskbarEventNames;
-  tooltips?: TaskbarTooltips;
-  icons?: TaskbarIconPaths;
+export interface ThumbarClickEvent {
+  id: number
+  window: string
 }
 
 /**
- * Explicitly attach taskbar thumbnail buttons to the current window.
- * Usually optional when autoAttach is enabled in plugin config.
+ * Adds the complete thumbnail toolbar button list to the current window.
+ *
+ * Windows only allows buttons to be added once per window. Call `update` for
+ * subsequent changes; at most 7 buttons are supported.
  */
-export async function initialize(): Promise<void> {
-  await invoke("plugin:taskbar|initialize");
+export async function initialize(buttons: ThumbarButton[]): Promise<void> {
+  await invoke('plugin:thumbar|initialize', { buttons })
 }
 
 /**
- * Updates the play/pause thumbnail button icon and tooltip.
+ * Updates an existing button's icon, tooltip, enabled or visible state.
  */
-export async function setPlaybackState(isPlaying: boolean): Promise<void> {
-  await invoke("plugin:taskbar|set_playback_state", { isPlaying });
+export async function update(button: ThumbarButtonUpdate): Promise<void> {
+  await invoke('plugin:thumbar|update', { button })
 }
 
 /**
- * Updates enabled state + icon state for previous/next thumbnail buttons.
- */
-export async function setNavigationEnabled(
-  previousEnabled: boolean,
-  nextEnabled: boolean,
-): Promise<void> {
-  await invoke("plugin:taskbar|set_navigation_enabled", {
-    previousEnabled,
-    nextEnabled,
-  });
-}
-
-/**
- * Returns whether the current platform supports this plugin's native behavior.
+ * Returns whether the current platform supports native thumbnail toolbars.
  */
 export async function isSupported(): Promise<boolean> {
-  return await invoke<boolean>("plugin:taskbar|is_supported");
+  return await invoke<boolean>('plugin:thumbar|is_supported')
 }

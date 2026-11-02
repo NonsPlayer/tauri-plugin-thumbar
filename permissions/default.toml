@@ -1,10 +1,9 @@
 "$schema" = "schemas/schema.json"
 
 [default]
-description = "Enables standard taskbar control commands for this plugin."
+description = "Enables thumbnail toolbar control commands for this plugin."
 permissions = [
   "allow-initialize",
-  "allow-set-playback-state",
-  "allow-set-navigation-enabled",
+  "allow-update",
   "allow-is-supported",
 ]
