@@ -4,6 +4,7 @@
     "module": "ES2020",
     "declaration": true,
     "emitDeclarationOnly": true,
+    "outDir": "../dist-js",
     "strict": true,
     "moduleResolution": "Bundler",
     "skipLibCheck": true,
