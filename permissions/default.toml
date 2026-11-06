@@ -6,5 +6,6 @@ permissions = [
   "allow-initialize",
   "allow-update",
   "allow-set-cover",
+  "allow-set-progress",
   "allow-is-supported",
 ]

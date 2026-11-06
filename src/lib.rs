@@ -1,4 +1,4 @@
-//! Runtime-defined Windows taskbar thumbnail toolbar controls for Tauri applications.
+//! Runtime-defined Windows taskbar controls for Tauri applications.
 //!
 //! Call [`Thumbar::initialize`] once per window with the complete button list.
 //! Windows only allows the button set to be added once per window; later changes
@@ -7,6 +7,8 @@
 //!
 //! [`Thumbar::set_cover`] replaces the taskbar hover thumbnail with a static
 //! cover image. Passing `None` restores the live window thumbnail.
+//!
+//! [`Thumbar::set_progress`] drives the taskbar button progress bar.
 
 mod commands;
 mod desktop;
@@ -24,7 +26,8 @@ use tauri::{
 
 pub use error::{Error, Result};
 pub use models::{
-    Button, ButtonHandler, ButtonUpdate, ClickEvent, Cover, MAX_BUTTONS, MAX_COVER_BYTES,
+    Button, ButtonHandler, ButtonUpdate, ClickEvent, Cover, Progress, ProgressState, MAX_BUTTONS,
+    MAX_COVER_BYTES,
 };
 
 use models::WindowState;
@@ -94,6 +97,20 @@ impl<R: Runtime> Thumbar<R> {
         desktop::set_cover(window, &state, cover)
     }
 
+    /// Sets or hides the taskbar button progress bar.
+    ///
+    /// `percent` is clamped to `0..=100` and ignored for `None` and
+    /// `Indeterminate`. Passing `None` hides the progress bar. The state is
+    /// restored when Explorer recreates the taskbar button.
+    pub fn set_progress(
+        &self,
+        window: &WebviewWindow<R>,
+        progress: Option<Progress>,
+    ) -> Result<()> {
+        let state = self.window_state(window)?;
+        desktop::set_progress(&state, progress)
+    }
+
     fn window_state(&self, window: &WebviewWindow<R>) -> Result<Arc<WindowState>> {
         let label = window.label();
         let windows = self
@@ -150,6 +167,7 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
             commands::initialize,
             commands::update,
             commands::set_cover,
+            commands::set_progress,
             commands::is_supported,
         ])
         .build()

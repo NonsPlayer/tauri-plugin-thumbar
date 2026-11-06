@@ -7,6 +7,7 @@ Enables thumbnail toolbar control commands for this plugin.
 - `allow-initialize`
 - `allow-update`
 - `allow-set-cover`
+- `allow-set-progress`
 - `allow-is-supported`
 
 ## Permission Table
@@ -92,6 +93,32 @@ Enables the set_cover command without any pre-configured scope.
 <td>
 
 Denies the set_cover command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`thumbar:allow-set-progress`
+
+</td>
+<td>
+
+Enables the set_progress command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`thumbar:deny-set-progress`
+
+</td>
+<td>
+
+Denies the set_progress command without any pre-configured scope.
 
 </td>
 </tr>

@@ -1,6 +1,7 @@
 # tauri-plugin-thumbar
 
-Runtime-defined Windows taskbar thumbnail toolbar controls for Tauri applications.
+Runtime-defined Windows taskbar controls for Tauri applications: thumbnail
+toolbar buttons, hover thumbnail covers and the taskbar button progress bar.
 
 The button list is supplied at runtime. Windows only lets an application add
 buttons to a window's thumbnail toolbar once, so `initialize` takes the complete
@@ -141,6 +142,27 @@ await clearCover()
   peek preview; Windows versions that show a full-size peek preview from the
   Alt+Tab switcher may therefore use the cover there as well.
 
+## Progress
+
+`set_progress` drives the progress bar on the taskbar button. `percent` is
+clamped to `0..=100` and ignored for `none` and `indeterminate`. Pass `None`
+from Rust or `null` from JavaScript to hide the bar.
+
+```rust
+use tauri_plugin_thumbar::{Progress, ThumbarExt};
+
+app.thumbar().set_progress(&window, Some(Progress::normal(42)))?;
+app.thumbar().set_progress(&window, Some(Progress::indeterminate()))?;
+app.thumbar().set_progress(&window, None)?;
+```
+
+- `normal`: determinate progress.
+- `indeterminate`: activity without a known percentage.
+- `paused`: determinate progress shown as paused.
+- `error`: determinate progress shown as failed.
+- `none`: same as passing `None`.
+- The progress state is restored when Explorer recreates the taskbar button.
+
 ## JavaScript usage
 
 Add the plugin's default permission to your capability (for example
@@ -153,7 +175,7 @@ Add the plugin's default permission to your capability (for example
 ```
 
 ```ts
-import { initialize, isSupported, update } from 'tauri-plugin-thumbar'
+import { initialize, isSupported, setProgress, update } from 'tauri-plugin-thumbar'
 import { listen } from '@tauri-apps/api/event'
 
 if (await isSupported()) {
@@ -164,6 +186,8 @@ if (await isSupported()) {
   ])
 
   await update({ id: 2, icon: 'icons/thumbar/pause.ico', tooltip: 'Pause' })
+  await setProgress({ state: 'normal', percent: 42 })
+  await setProgress(null)
 
   const unlisten = await listen<{ id: number; window: string }>('thumbar-toggle', (event) => {
     console.log(event.payload.id, event.payload.window)

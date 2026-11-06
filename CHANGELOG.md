@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+- Taskbar button progress bar through `set_progress`, with normal, indeterminate, paused and error states.
+
 ## [0.1.1] - 2026-11-02
 
 ### Added

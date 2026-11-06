@@ -331,6 +331,18 @@
           "markdownDescription": "Denies the set_cover command without any pre-configured scope."
         },
         {
+          "description": "Enables the set_progress command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-progress",
+          "markdownDescription": "Enables the set_progress command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_progress command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-progress",
+          "markdownDescription": "Denies the set_progress command without any pre-configured scope."
+        },
+        {
           "description": "Enables the update command without any pre-configured scope.",
           "type": "string",
           "const": "allow-update",
@@ -343,10 +355,10 @@
           "markdownDescription": "Denies the update command without any pre-configured scope."
         },
         {
-          "description": "Enables thumbnail toolbar control commands for this plugin.\n#### This default permission set includes:\n\n- `allow-initialize`\n- `allow-update`\n- `allow-set-cover`\n- `allow-is-supported`",
+          "description": "Enables thumbnail toolbar control commands for this plugin.\n#### This default permission set includes:\n\n- `allow-initialize`\n- `allow-update`\n- `allow-set-cover`\n- `allow-set-progress`\n- `allow-is-supported`",
           "type": "string",
           "const": "default",
-          "markdownDescription": "Enables thumbnail toolbar control commands for this plugin.\n#### This default permission set includes:\n\n- `allow-initialize`\n- `allow-update`\n- `allow-set-cover`\n- `allow-is-supported`"
+          "markdownDescription": "Enables thumbnail toolbar control commands for this plugin.\n#### This default permission set includes:\n\n- `allow-initialize`\n- `allow-update`\n- `allow-set-cover`\n- `allow-set-progress`\n- `allow-is-supported`"
         }
       ]
     }

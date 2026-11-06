@@ -23,8 +23,9 @@ mod platform {
     use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
     use windows::Win32::UI::Shell::{
         DefSubclassProc, ITaskbarList3, RemoveWindowSubclass, SetWindowSubclass, TaskbarList,
-        THBF_DISABLED, THBF_ENABLED, THBF_HIDDEN, THBN_CLICKED, THB_FLAGS, THB_ICON, THB_TOOLTIP,
-        THUMBBUTTON, THUMBBUTTONFLAGS,
+        TBPF_ERROR, TBPF_INDETERMINATE, TBPF_NOPROGRESS, TBPF_NORMAL, TBPF_PAUSED, THBF_DISABLED,
+        THBF_ENABLED, THBF_HIDDEN, THBN_CLICKED, THB_FLAGS, THB_ICON, THB_TOOLTIP, THUMBBUTTON,
+        THUMBBUTTONFLAGS,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
         DestroyIcon, GetClientRect, LoadImageW, PostMessageW, RegisterWindowMessageW, HICON,
@@ -35,12 +36,13 @@ mod platform {
     use crate::error::{Error, Result};
     use crate::models::{
         Button, ButtonHandler, ButtonState, ButtonUpdate, ClickEvent, Cover, CoverImage,
-        CoverSource, WindowState, MAX_COVER_BYTES,
+        CoverSource, Progress, ProgressState, WindowState, MAX_COVER_BYTES,
     };
 
     const SUBCLASS_ID: usize = 4242;
     const WM_USER_UPDATE: u32 = WM_USER + 1;
     const WM_USER_COVER: u32 = WM_USER + 2;
+    const WM_USER_PROGRESS: u32 = WM_USER + 3;
 
     const MAX_COVER_DIMENSION: u32 = 16_384;
     const MAX_COVER_ALLOC: u64 = 256 * 1024 * 1024;
@@ -89,6 +91,7 @@ mod platform {
             hwnd: hwnd.0 as isize,
             buttons: Mutex::new(states),
             cover: Mutex::new(None),
+            progress: Mutex::new(Progress::default()),
         });
 
         let emit_label = label.clone();
@@ -203,6 +206,32 @@ mod platform {
         Ok(())
     }
 
+    pub fn set_progress(state: &Arc<WindowState>, progress: Option<Progress>) -> Result<()> {
+        let next = progress.unwrap_or_default();
+        {
+            let mut current = state
+                .progress
+                .lock()
+                .map_err(|_| Error::Message("thumbar progress state is poisoned".into()))?;
+            if *current == next {
+                return Ok(());
+            }
+            *current = next;
+        }
+
+        unsafe {
+            PostMessageW(
+                Some(HWND(state.hwnd as _)),
+                WM_USER_PROGRESS,
+                WPARAM(0),
+                LPARAM(0),
+            )
+            .map_err(|error| Error::Message(format!("failed to post progress update: {error}")))?;
+        }
+
+        Ok(())
+    }
+
     unsafe extern "system" fn subclass_proc(
         hwnd: HWND,
         msg: u32,
@@ -253,6 +282,14 @@ mod platform {
             }
             unsafe {
                 let _ = DwmInvalidateIconicBitmaps(context.hwnd);
+            }
+
+            return LRESULT(0);
+        }
+
+        if msg == WM_USER_PROGRESS {
+            if let Err(error) = apply_progress(context) {
+                log::error!("thumbar: failed to update progress: {error}");
             }
 
             return LRESULT(0);
@@ -318,6 +355,9 @@ mod platform {
         }
 
         if msg == WM_NCDESTROY {
+            if let Some(taskbar) = &context.taskbar {
+                let _ = taskbar.SetProgressState(hwnd, TBPF_NOPROGRESS);
+            }
             let _ = RemoveWindowSubclass(hwnd, Some(subclass_proc), u_id_subclass);
             for icon in context.icons.values() {
                 let _ = DestroyIcon(*icon);
@@ -348,6 +388,10 @@ mod platform {
         context.taskbar = Some(taskbar);
         context.added = true;
 
+        if let Err(error) = apply_progress(context) {
+            log::error!("thumbar: failed to restore progress: {error}");
+        }
+
         let has_cover = context
             .state
             .cover
@@ -358,6 +402,36 @@ mod platform {
             let _ = DwmInvalidateIconicBitmaps(context.hwnd);
         }
 
+        Ok(())
+    }
+
+    unsafe fn apply_progress(context: &Context) -> Result<()> {
+        let Some(taskbar) = &context.taskbar else {
+            return Ok(());
+        };
+        let progress = *context
+            .state
+            .progress
+            .lock()
+            .map_err(|_| Error::Message("thumbar progress state is poisoned".into()))?;
+        let state = match progress.state {
+            ProgressState::None => TBPF_NOPROGRESS,
+            ProgressState::Normal => TBPF_NORMAL,
+            ProgressState::Indeterminate => TBPF_INDETERMINATE,
+            ProgressState::Paused => TBPF_PAUSED,
+            ProgressState::Error => TBPF_ERROR,
+        };
+        taskbar
+            .SetProgressState(context.hwnd, state)
+            .map_err(|error| Error::Message(format!("SetProgressState: {error}")))?;
+        if !matches!(
+            progress.state,
+            ProgressState::None | ProgressState::Indeterminate
+        ) {
+            taskbar
+                .SetProgressValue(context.hwnd, progress.percent.unwrap_or(0) as u64, 100)
+                .map_err(|error| Error::Message(format!("SetProgressValue: {error}")))?;
+        }
         Ok(())
     }
 
@@ -685,7 +759,9 @@ mod platform {
     use tauri::{Runtime, WebviewWindow};
 
     use crate::error::Result;
-    use crate::models::{Button, ButtonHandler, ButtonState, ButtonUpdate, Cover, WindowState};
+    use crate::models::{
+        Button, ButtonHandler, ButtonState, ButtonUpdate, Cover, Progress, WindowState,
+    };
 
     pub fn attach<R: Runtime>(
         _window: &WebviewWindow<R>,
@@ -696,6 +772,7 @@ mod platform {
             hwnd: 0,
             buttons: Mutex::new(buttons.into_iter().map(ButtonState::from).collect()),
             cover: Mutex::new(None),
+            progress: Mutex::new(Progress::default()),
         }))
     }
 
@@ -714,6 +791,10 @@ mod platform {
     ) -> Result<()> {
         Ok(())
     }
+
+    pub fn set_progress(_state: &Arc<WindowState>, _progress: Option<Progress>) -> Result<()> {
+        Ok(())
+    }
 }
 
-pub use platform::{attach, set_cover, update};
+pub use platform::{attach, set_cover, set_progress, update};

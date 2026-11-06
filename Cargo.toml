@@ -1,7 +1,7 @@
 [package]
 name = "tauri-plugin-thumbar"
-version = "0.1.1"
-description = "Runtime-defined Windows taskbar thumbnail toolbar controls for Tauri apps"
+version = "0.2.0"
+description = "Runtime-defined Windows taskbar controls for Tauri apps"
 authors = ["Miaoyww"]
 license = "MIT"
 edition = "2021"

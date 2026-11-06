@@ -208,6 +208,58 @@ pub struct ClickEvent {
 /// work should be forwarded to another thread or channel.
 pub type ButtonHandler = Box<dyn Fn(&str, u32) + Send + Sync + 'static>;
 
+/// Taskbar progress bar state.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ProgressState {
+    /// Hides the progress bar.
+    #[default]
+    None,
+    Normal,
+    Indeterminate,
+    Paused,
+    Error,
+}
+
+/// Taskbar progress bar update.
+///
+/// `percent` is clamped to `0..=100` and ignored for `None` and
+/// `Indeterminate`. Passing `None` to [`crate::Thumbar::set_progress`] hides
+/// the progress bar.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Progress {
+    #[serde(default)]
+    pub state: ProgressState,
+    #[serde(default)]
+    pub percent: Option<u8>,
+}
+
+impl Progress {
+    pub fn new(state: ProgressState, percent: Option<u8>) -> Self {
+        Self {
+            state,
+            percent: percent.map(|percent| percent.min(100)),
+        }
+    }
+
+    pub fn normal(percent: u8) -> Self {
+        Self::new(ProgressState::Normal, Some(percent))
+    }
+
+    pub fn indeterminate() -> Self {
+        Self::new(ProgressState::Indeterminate, None)
+    }
+
+    pub fn paused(percent: u8) -> Self {
+        Self::new(ProgressState::Paused, Some(percent))
+    }
+
+    pub fn error(percent: u8) -> Self {
+        Self::new(ProgressState::Error, Some(percent))
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct ButtonState {
     pub id: u32,
@@ -243,6 +295,8 @@ pub(crate) struct WindowState {
     pub buttons: Mutex<Vec<ButtonState>>,
     #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
     pub cover: Mutex<Option<Arc<CoverImage>>>,
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+    pub progress: Mutex<Progress>,
 }
 
 pub(crate) fn validate_buttons(buttons: &[Button]) -> Result<()> {
@@ -383,5 +437,12 @@ mod tests {
             Ok(CoverSource::Bytes(decoded)) => assert_eq!(decoded, bytes),
             _ => panic!("expected decoded cover bytes"),
         }
+    }
+
+    #[test]
+    fn progress_clamps_percent() {
+        assert_eq!(Progress::normal(140).percent, Some(100));
+        assert_eq!(Progress::paused(42).percent, Some(42));
+        assert_eq!(Progress::indeterminate().percent, None);
     }
 }

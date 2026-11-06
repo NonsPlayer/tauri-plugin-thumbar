@@ -25,6 +25,19 @@ export interface ThumbarClickEvent {
   window: string
 }
 
+export type ThumbarProgressState =
+  | 'none'
+  | 'normal'
+  | 'indeterminate'
+  | 'paused'
+  | 'error'
+
+export interface ThumbarProgress {
+  state: ThumbarProgressState
+  /** Progress percentage, clamped to 0..=100. Ignored for `none` and `indeterminate`. */
+  percent?: number
+}
+
 /**
  * Adds the complete thumbnail toolbar button list to the current window.
  *
@@ -66,6 +79,15 @@ export async function setCoverFromBytes(bytes: Uint8Array | ArrayBuffer): Promis
  */
 export async function clearCover(): Promise<void> {
   await invoke('plugin:thumbar|set_cover', { cover: null })
+}
+
+/**
+ * Sets the taskbar button progress bar.
+ *
+ * Pass `null` to hide it.
+ */
+export async function setProgress(progress: ThumbarProgress | null): Promise<void> {
+  await invoke('plugin:thumbar|set_progress', { progress })
 }
 
 /**

@@ -1,6 +1,6 @@
 use tauri::{command, Runtime, State, WebviewWindow};
 
-use crate::{Button, ButtonUpdate, Cover, Thumbar};
+use crate::{Button, ButtonUpdate, Cover, Progress, Thumbar};
 
 #[command]
 pub fn initialize<R: Runtime>(
@@ -32,6 +32,17 @@ pub async fn set_cover<R: Runtime>(
 ) -> Result<(), String> {
     state
         .set_cover(&window, cover)
+        .map_err(|error| error.to_string())
+}
+
+#[command]
+pub fn set_progress<R: Runtime>(
+    window: WebviewWindow<R>,
+    progress: Option<Progress>,
+    state: State<'_, Thumbar<R>>,
+) -> Result<(), String> {
+    state
+        .set_progress(&window, progress)
         .map_err(|error| error.to_string())
 }
 
