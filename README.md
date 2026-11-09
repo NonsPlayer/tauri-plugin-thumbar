@@ -135,8 +135,9 @@ await clearCover()
 - The encoded image must not exceed **16 MiB**.
 - Paths must be absolute; relative paths are rejected.
 - The cover stays attached until `clear_cover` or the window is destroyed.
-- The image is scaled to fit and letterboxed on black. It is rendered when DWM
-  requests the thumbnail, for both the iconic thumbnail and the peek preview.
+- The iconic thumbnail is scaled to fit and submitted at the scaled cover size,
+  so the taskbar thumbnail follows the cover aspect ratio.
+- The peek preview remains window-sized and letterboxes the cover on black.
 - Setting `DWMWA_FORCE_ICONIC_REPRESENTATION` is required for this behavior.
   It forces the iconic representation for the window's taskbar thumbnail and
   peek preview; Windows versions that show a full-size peek preview from the

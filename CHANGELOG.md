@@ -7,6 +7,9 @@ All notable changes to this project will be documented in this file.
 ### Added
 - Taskbar button progress bar through `set_progress`, with normal, indeterminate, paused and error states.
 
+### Changed
+- Taskbar cover thumbnails now follow the cover aspect ratio instead of using a maximum-size letterboxed canvas; peek previews remain window-sized.
+
 ## [0.1.1] - 2026-11-02
 
 ### Added

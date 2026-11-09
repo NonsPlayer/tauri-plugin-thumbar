@@ -46,6 +46,8 @@ mod platform {
 
     const MAX_COVER_DIMENSION: u32 = 16_384;
     const MAX_COVER_ALLOC: u64 = 256 * 1024 * 1024;
+    const DEFAULT_THUMBNAIL_WIDTH: u32 = 200;
+    const DEFAULT_THUMBNAIL_HEIGHT: u32 = 200;
 
     static TASKBAR_CREATED_MSG_ID: AtomicU32 = AtomicU32::new(0);
 
@@ -57,6 +59,7 @@ mod platform {
         state: Arc<WindowState>,
         taskbar: Option<ITaskbarList3>,
         added: bool,
+        thumbnail_max: Option<(u32, u32)>,
         icons: HashMap<PathBuf, HICON>,
         handler: Option<ButtonHandler>,
         emit: EventEmitter,
@@ -111,6 +114,7 @@ mod platform {
             state: state.clone(),
             taskbar: None,
             added: false,
+            thumbnail_max: None,
             icons,
             handler,
             emit,
@@ -280,8 +284,37 @@ mod platform {
             if let Err(error) = set_iconic_attributes(context.hwnd, has_cover) {
                 log::error!("thumbar: failed to update cover attributes: {error}");
             }
-            unsafe {
-                let _ = DwmInvalidateIconicBitmaps(context.hwnd);
+
+            if has_cover {
+                let (width, height) = context
+                    .thumbnail_max
+                    .unwrap_or((DEFAULT_THUMBNAIL_WIDTH, DEFAULT_THUMBNAIL_HEIGHT));
+                let warmed = match context.render_cover_bitmap(width, height, false) {
+                    Some(bitmap) => {
+                        let result = unsafe { DwmSetIconicThumbnail(context.hwnd, bitmap, 0) }
+                            .map_err(|error| {
+                                Error::Message(format!("DwmSetIconicThumbnail: {error}"))
+                            });
+                        unsafe {
+                            let _ = DeleteObject(bitmap.into());
+                        }
+                        result
+                    }
+                    None => Err(Error::Message(
+                        "cover could not be rendered for the thumbnail".into(),
+                    )),
+                };
+
+                if let Err(error) = warmed {
+                    log::warn!("thumbar: failed to warm iconic thumbnail: {error}");
+                    unsafe {
+                        let _ = DwmInvalidateIconicBitmaps(context.hwnd);
+                    }
+                }
+            } else {
+                unsafe {
+                    let _ = DwmInvalidateIconicBitmaps(context.hwnd);
+                }
             }
 
             return LRESULT(0);
@@ -298,8 +331,9 @@ mod platform {
         if msg == WM_DWMSENDICONICTHUMBNAIL {
             let width = ((lparam.0 >> 16) & 0xFFFF) as u32;
             let height = (lparam.0 & 0xFFFF) as u32;
+            context.thumbnail_max = Some((width, height));
 
-            if let Some(bitmap) = context.render_cover_bitmap(width, height) {
+            if let Some(bitmap) = context.render_cover_bitmap(width, height, false) {
                 unsafe {
                     if let Err(error) = DwmSetIconicThumbnail(context.hwnd, bitmap, 0) {
                         log::error!("thumbar: failed to set iconic thumbnail: {error}");
@@ -315,7 +349,7 @@ mod platform {
         if msg == WM_DWMSENDICONICLIVEPREVIEWBITMAP {
             let (width, height) = context.client_size();
 
-            if let Some(bitmap) = context.render_cover_bitmap(width, height) {
+            if let Some(bitmap) = context.render_cover_bitmap(width, height, true) {
                 unsafe {
                     if let Err(error) = DwmSetIconicLivePreviewBitmap(context.hwnd, bitmap, None, 0)
                     {
@@ -466,7 +500,7 @@ mod platform {
             }
         }
 
-        fn render_cover_bitmap(&self, width: u32, height: u32) -> Option<HBITMAP> {
+        fn render_cover_bitmap(&self, width: u32, height: u32, letterbox: bool) -> Option<HBITMAP> {
             if width == 0 || height == 0 {
                 return None;
             }
@@ -476,7 +510,7 @@ mod platform {
                 guard.as_ref().cloned()?
             };
 
-            match render_bitmap(&cover, width, height) {
+            match render_bitmap(&cover, width, height, letterbox) {
                 Ok(bitmap) => Some(bitmap),
                 Err(error) => {
                     log::error!("thumbar: failed to render cover: {error}");
@@ -638,7 +672,12 @@ mod platform {
         })
     }
 
-    fn render_bitmap(cover: &CoverImage, width: u32, height: u32) -> Result<HBITMAP> {
+    fn render_bitmap(
+        cover: &CoverImage,
+        width: u32,
+        height: u32,
+        letterbox: bool,
+    ) -> Result<HBITMAP> {
         let (fit_width, fit_height) = fit_within(cover.width, cover.height, width, height);
 
         let source = image::RgbaImage::from_raw(cover.width, cover.height, cover.rgba.clone())
@@ -650,18 +689,33 @@ mod platform {
             image::imageops::FilterType::Lanczos3,
         );
 
-        let mut pixels = vec![0u8; width as usize * height as usize * 4];
-        for pixel in pixels.chunks_exact_mut(4) {
-            pixel[3] = 255;
+        let (target_width, target_height) = if letterbox {
+            (width, height)
+        } else {
+            (fit_width, fit_height)
+        };
+        let mut pixels = vec![0u8; target_width as usize * target_height as usize * 4];
+        if letterbox {
+            for pixel in pixels.chunks_exact_mut(4) {
+                pixel[3] = 255;
+            }
         }
 
-        let origin_x = (width - fit_width) / 2;
-        let origin_y = (height - fit_height) / 2;
+        let origin_x = if letterbox {
+            (width - fit_width) / 2
+        } else {
+            0
+        };
+        let origin_y = if letterbox {
+            (height - fit_height) / 2
+        } else {
+            0
+        };
         for y in 0..fit_height {
             for x in 0..fit_width {
                 let source_pixel = resized.get_pixel(x, y);
                 let alpha = source_pixel[3] as u32;
-                let offset = (((y + origin_y) * width + (x + origin_x)) * 4) as usize;
+                let offset = (((y + origin_y) * target_width + (x + origin_x)) * 4) as usize;
                 pixels[offset] = (source_pixel[2] as u32 * alpha / 255) as u8;
                 pixels[offset + 1] = (source_pixel[1] as u32 * alpha / 255) as u8;
                 pixels[offset + 2] = (source_pixel[0] as u32 * alpha / 255) as u8;
@@ -669,7 +723,7 @@ mod platform {
             }
         }
 
-        create_bitmap(width, height, &pixels)
+        create_bitmap(target_width, target_height, &pixels)
     }
 
     fn fit_within(
@@ -748,6 +802,80 @@ mod platform {
 
         if count < 260 {
             buf[count] = 0;
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use std::ffi::c_void;
+        use std::mem::size_of;
+
+        use windows::Win32::Graphics::Gdi::{DeleteObject, GetObjectW, BITMAP};
+
+        use super::{fit_within, render_bitmap};
+        use crate::models::CoverImage;
+
+        #[test]
+        fn square_covers_fit_the_shorter_edge() {
+            assert_eq!(fit_within(1000, 1000, 320, 180), (180, 180));
+        }
+
+        #[test]
+        fn wide_covers_fit_the_available_width() {
+            assert_eq!(fit_within(1920, 1080, 320, 180), (320, 180));
+        }
+
+        #[test]
+        fn tall_covers_fit_the_available_height() {
+            assert_eq!(fit_within(1080, 1920, 320, 180), (101, 180));
+        }
+
+        #[test]
+        fn dimensions_never_exceed_the_thumbnail_bounds() {
+            for (width, height) in [(1, 10_000), (10_000, 1), (16_384, 16_384)] {
+                let (fit_width, fit_height) = fit_within(width, height, 320, 180);
+                assert!(fit_width <= 320);
+                assert!(fit_height <= 180);
+                assert!(fit_width > 0);
+                assert!(fit_height > 0);
+            }
+        }
+
+        fn bitmap_size(cover: &CoverImage, width: u32, height: u32, letterbox: bool) -> (i32, i32) {
+            let bitmap = render_bitmap(cover, width, height, letterbox).unwrap();
+            let mut info = BITMAP::default();
+            let read = unsafe {
+                GetObjectW(
+                    bitmap.into(),
+                    size_of::<BITMAP>() as i32,
+                    Some(&mut info as *mut _ as *mut c_void),
+                )
+            };
+            unsafe {
+                let _ = DeleteObject(bitmap.into());
+            }
+            assert_eq!(read, size_of::<BITMAP>() as i32);
+            (info.bmWidth, info.bmHeight)
+        }
+
+        #[test]
+        fn thumbnails_use_the_fitted_cover_size() {
+            let cover = CoverImage {
+                width: 2,
+                height: 1,
+                rgba: vec![255; 2 * 4],
+            };
+            assert_eq!(bitmap_size(&cover, 320, 180, false), (320, 160));
+        }
+
+        #[test]
+        fn letterboxed_bitmaps_use_the_requested_canvas() {
+            let cover = CoverImage {
+                width: 1,
+                height: 1,
+                rgba: vec![255; 4],
+            };
+            assert_eq!(bitmap_size(&cover, 320, 180, true), (320, 180));
         }
     }
 }
